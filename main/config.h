@@ -8,7 +8,6 @@
 #define JSON_USERID 1
 #define JSON_TIMEZONE "Europe/Madrid"
 
-#define CONSUME_AMOUNT 100
 #define WEB_PORT "80"
 #define WEB_HOST "sensoria.cat"
 
