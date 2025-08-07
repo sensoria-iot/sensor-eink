@@ -1,3 +1,7 @@
+# idf managed components
+managed_components/
+build/
+
 # Prerequisites
 *.d
 

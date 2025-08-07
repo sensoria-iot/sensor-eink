@@ -1,0 +1,6 @@
+[submodule "components/scd40"]
+	path = components/scd40
+	url = https://github.com/timbuntu/esp-idf-scd4x.git
+[submodule "components/fastepd"]
+	path = components/fastepd
+	url = https://github.com/bitbank2/FastEPD.git

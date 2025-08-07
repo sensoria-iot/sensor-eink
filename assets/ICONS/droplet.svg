@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="35mm"
+   height="35mm"
+   viewBox="0 0 35 35"
+   version="1.1"
+   id="svg5"
+   inkscape:version="1.1.2 (0a00cf5339, 2022-02-04)"
+   sodipodi:docname="droplet.svg.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview7"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:pageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:document-units="mm"
+     showgrid="false"
+     inkscape:zoom="0.77504209"
+     inkscape:cx="397.39777"
+     inkscape:cy="-368.36709"
+     inkscape:window-width="1862"
+     inkscape:window-height="1016"
+     inkscape:window-x="58"
+     inkscape:window-y="27"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1" />
+  <defs
+     id="defs2" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <rect
+       width="51.807499"
+       height="51.807499"
+       stroke="none"
+       fill="#000000"
+       opacity="0"
+       id="rect824"
+       x="-1.3079666"
+       y="-2.5692489"
+       style="stroke-width:2.15865" />
+    <g
+       style="fill:currentColor"
+       id="g968"
+       transform="matrix(1.6020213,0,0,1.6020213,5.7888556,5.4094927)">
+      <path
+         fill-rule="evenodd"
+         d="M 7.21,0.8 C 7.69,0.295 8,0 8,0 q 0.164,0.544 0.371,1.038 c 0.812,1.946 2.073,3.35 3.197,4.6 C 12.878,7.096 14,8.345 14,10 A 6,6 0 0 1 2,10 C 2,6.668 5.58,2.517 7.21,0.8 M 7.623,1.821 A 31,31 0 0 0 5.794,3.99 C 5.068,4.94 4.358,5.998 3.834,7.06 3.304,8.133 3,9.138 3,10 a 5,5 0 0 0 10,0 C 13,8.799 12.204,7.843 10.819,6.3 L 10.789,6.268 C 9.75,5.11 8.5,3.72 7.623,1.82 Z"
+         id="path956" />
+      <path
+         fill-rule="evenodd"
+         d="M 4.553,7.776 C 5.373,6.135 6.27,5.023 6.646,4.646 l 0.708,0.708 c -0.29,0.29 -1.128,1.311 -1.907,2.87 z"
+         id="path958" />
+    </g>
+  </g>
+</svg>
