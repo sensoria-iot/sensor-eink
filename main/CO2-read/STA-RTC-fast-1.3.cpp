@@ -1,6 +1,17 @@
 // Edit your API setup and general configuration options:
 #include "../config.h"
+#include "driver/i2c.h"
+#define POWER_STATE_PIN   3
+#define POWER_HOLD_PIN    21
+#define RV3032_INT_PIN    2
 
+// RTC Alarm
+#define I2C_MASTER_NUM I2C_NUM_0
+volatile bool rtc_alarm_triggered = false;
+
+extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
+    rtc_alarm_triggered = true;
+}
 
 // FastEPD component:
 #include "FastEPD.cpp"
@@ -570,9 +581,9 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     box.x = 50;
     box.y = 50;
     box.w = 800;
-    box.h = 250;
+    box.h = 300;
     //epaper.fullUpdate(false, false, box);
-    epaper.fillRect(x_offset, y_offset, 300, 300, 0xF);
+    epaper.fillRect(1, y_offset, EPD_WIDTH, 300, 0xF);
     for (int y = -2; y < size + border; y ++) {
         for (int x = -2; x < size + border; x ++) {
             color = esp_qrcode_get_module(qrcode, x, y);
@@ -590,6 +601,10 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
     epaper.drawString(textbuffer, 450, 160);
+
+    textbuffer[0] = '\0';
+    snprintf(textbuffer, sizeof(textbuffer), "%s", API_KEY);
+    epaper.drawString(textbuffer, 458, 310);
     epaper.fullUpdate(false, false, &box);
 }
 
@@ -606,6 +621,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
             case RMAKER_EVENT_CLAIM_SUCCESSFUL:
                 ESP_LOGI(TAG, "RainMaker Claim Successful.");
+                epaper.fillScreen(16);
+                epaper.fullUpdate(false, false);
                 break;
             case RMAKER_EVENT_CLAIM_FAILED:
                 ESP_LOGI(TAG, "RainMaker Claim Failed.");
@@ -983,6 +1000,18 @@ void app_main()
 {
     // Hello Program
     printf("RTC version 1.3\n");
+
+    gpio_set_direction((gpio_num_t) POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t) POWER_HOLD_PIN, 1); // HOLD Power on
+    // Configure power state pin as input
+    gpio_config_t power_conf = {};
+    power_conf.mode = GPIO_MODE_INPUT;
+    power_conf.pin_bit_mask = (1ULL << POWER_STATE_PIN);
+    power_conf.intr_type = GPIO_INTR_DISABLE;
+    power_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    power_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&power_conf);
+    
     //-------------ADC1 Init---------------//
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
