@@ -4,6 +4,6 @@
 [submodule "components/fastepd"]
 	path = components/fastepd
 	url = https://github.com/bitbank2/FastEPD.git
-[submodule "components/rv3032"]
-	path = components/rv3032
-	url = https://github.com/jonasschnelli/RV3032_ESP32.git
+[submodule "components/bb_rtc"]
+	path = components/bb_rtc
+	url = https://github.com/bitbank2/bb_rtc.git

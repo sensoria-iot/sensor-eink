@@ -10,7 +10,7 @@ set(app_sources "CO2-read/STA-RTC-fast-1.3.cpp")
 # 4 new small white PCB C3 
 set(app_requires  
                  fastepd
-                 rv3032
+                 bb_rtc
                  json
                  scd40      # sensor
                  qrcode esp_rainmaker  # Wi-FI provision

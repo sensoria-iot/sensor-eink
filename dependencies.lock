@@ -224,6 +224,6 @@ direct_dependencies:
 - espressif/json_generator
 - espressif/qrcode
 - idf
-manifest_hash: 64a1397c50c8ceebe194b7bbee29eb644caeea1b5bd3ab9f6819c577e0a48200
+manifest_hash: 8c1ef1f94995760c1ada4ffcf379dc348b2e4b21e0056e00e05031454a229a75
 target: esp32s3
 version: 2.0.0

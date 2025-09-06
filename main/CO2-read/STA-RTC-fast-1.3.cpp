@@ -4,18 +4,10 @@
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
 #define RV3032_INT_PIN    2
-#define I2C_ADDR_RV3032 0x51 // 7-bit address RTC
 
-#define RV3032_REG_SECONDS 0x01
-#define RV3032_REG_MINUTES 0x02
-#define RV3032_REG_HOURS   0x03
-#define RV3032_REG_ALM_MIN 0x08
-#define RV3032_REG_ALM_HR  0x09
-#define RV3032_REG_ALM_DATE 0x0A
-#define RV3032_REG_CTRL2   0x11
-#define RV3032_REG_STATUS  0x0D
+// Declare ASCII names for each of the supported RTC types
+const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
 // RTC Alarm
-#define I2C_MASTER_NUM I2C_NUM_0
 volatile bool rtc_alarm_triggered = false;
 
 extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
@@ -79,7 +71,6 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 // General libs
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include <sys/time.h>
 #include <sys/param.h>
 #include <stdlib.h>
@@ -96,23 +87,16 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-// ADC
-#include "soc/soc_caps.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-#define ADC2_CHANNEL ADC_CHANNEL_0  // IO1
-#define ADC_ATTEN    ADC_ATTEN_DB_12
-static int adc_raw[1][10];
-static int voltage[1][10];
-adc_oneshot_unit_handle_t adc1_handle;
-adc_cali_handle_t adc1_cali_chan0_handle = NULL;
-bool do_calibration1_chan0 = false;
+
 int batt_level = 100;
 // WIFI
 #include "esp_tls.h"
 #include "esp_netif.h"
 #include "esp_http_client.h"
+
+// RTC
+#include <bb_rtc.h>
+BBRTC rtc;
 //#include <app_insights.h>
 esp_rmaker_device_t *temp_sensor_device;
 
@@ -173,30 +157,6 @@ void deep_sleep()
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
-// Used by RV-3032 RTC: Convert decimal to BCD
-static uint8_t dec_to_bcd(uint8_t val) {
-    return ((val / 10) << 4) | (val % 10);
-}
-
-// Write 1 byte to RV-3032
-esp_err_t rv3032_write(uint8_t reg, uint8_t val) {
-    return i2c_master_write_to_device(I2C_MASTER_NUM, I2C_ADDR_RV3032, (uint8_t[]){reg, val}, 2, 100 / portTICK_PERIOD_MS);
-}
-
-// Read 1 byte from RV-3032
-esp_err_t rv3032_read(uint8_t reg, uint8_t *val) {
-    return i2c_master_write_read_device(I2C_MASTER_NUM, I2C_ADDR_RV3032, &reg, 1, val, 1, 100 / portTICK_PERIOD_MS);
-}
-
-// Clear alarm flag manually
-void rv3032_clear_alarm_flag() {
-    uint8_t status;
-    rv3032_read(RV3032_REG_STATUS, &status);
-    status &= ~(1 << 3);  // Clear AF bit (bit 3)
-    rv3032_write(RV3032_REG_STATUS, status);
-    ESP_LOGI("RTC", "Alarm flag cleared.");
-}
-
 void rtc_int_gpio_init() {
 	gpio_config_t io_conf = {};
 	io_conf.intr_type = GPIO_INTR_NEGEDGE; // Falling edge = INT̅ active
@@ -212,31 +172,6 @@ void rtc_int_gpio_init() {
     ESP_LOGI("RTC", "Attaching ISR handler...");
     ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)RV3032_INT_PIN, rtc_int_isr_handler, NULL));
 }
-
-void rv3032_debug_status() {
-    uint8_t sec, min, hr, alm_min, alm_hr, alm_date;
-    uint8_t ctrl2, status;
-
-    rv3032_read(RV3032_REG_SECONDS, &sec);
-    rv3032_read(RV3032_REG_MINUTES, &min);
-    rv3032_read(RV3032_REG_HOURS, &hr);
-
-    rv3032_read(RV3032_REG_ALM_MIN, &alm_min);
-    rv3032_read(RV3032_REG_ALM_HR, &alm_hr);
-    rv3032_read(RV3032_REG_ALM_DATE, &alm_date);
-
-    rv3032_read(RV3032_REG_CTRL2, &ctrl2);
-    rv3032_read(RV3032_REG_STATUS, &status);
-	
-    int int_level = gpio_get_level((gpio_num_t)RV3032_INT_PIN);
-
-    ESP_LOGI("RTC-DEBUG", "Current time: %02x:%02x:%02x", hr, min, sec);
-    ESP_LOGI("RTC-DEBUG", "Alarm set:    %02x:%02x date: 0x%02x", alm_hr, alm_min, alm_date);
-    ESP_LOGI("RTC-DEBUG", "CTRL2: 0x%02x (AIE=%d)", ctrl2, (ctrl2 >> 3) & 1);
-    ESP_LOGI("RTC-DEBUG", "STATUS: 0x%02x (AF=%d)", status, (status >> 3) & 1);
-    ESP_LOGI("RTC-DEBUG", "INT̅ pin level: %d (should be LOW when asserted)", int_level);
-}
-
 
 // Event handler for HTTP requests
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
@@ -993,63 +928,6 @@ void scd_read()
     sensirion_i2c_hal_free();
 }
 
-void i2c_master_init() {
-    i2c_config_t conf;
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = CONFIG_SDA_GPIO;
-    conf.scl_io_num = CONFIG_SCL_GPIO;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = 100000;
-    conf.clk_flags = 0;
-
-    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
-}
-
-// Set alarm 30s in the future
-void rv3032_set_alarm_30s_later() {
-    uint8_t sec, min, hr;
-    rv3032_read(RV3032_REG_SECONDS, &sec);
-    rv3032_read(RV3032_REG_MINUTES, &min);
-    rv3032_read(RV3032_REG_HOURS, &hr);
-
-    sec &= 0x7F;
-    min &= 0x7F;
-    hr  &= 0x3F;
-
-    uint8_t dec_sec = ((sec >> 4) * 10) + (sec & 0x0F);
-    uint8_t dec_min = ((min >> 4) * 10) + (min & 0x0F);
-    uint8_t dec_hr  = ((hr  >> 4) * 10) + (hr  & 0x0F);
-
-    // Add 30 seconds
-    dec_sec += 120; //60
-    if (dec_sec >= 60) {
-        dec_sec -= 60;
-        dec_min += 1;
-        if (dec_min >= 60) {
-            dec_min = 0;
-            dec_hr = (dec_hr + 1) % 24;
-        }
-    }
-
-    uint8_t bcd_min = dec_to_bcd(dec_min);
-    uint8_t bcd_hr  = dec_to_bcd(dec_hr);
-
-    // Set alarm for that minute/hour, ignore date
-    rv3032_write(RV3032_REG_ALM_MIN, bcd_min & 0x7F); // AE_M = 0
-    rv3032_write(RV3032_REG_ALM_HR,  bcd_hr & 0x7F);   // AE_H = 0
-    rv3032_write(RV3032_REG_ALM_DATE, 0x80);          // AE_D = 1 → disable date
-
-    // Enable alarm interrupt
-    uint8_t ctrl2;
-    rv3032_read(RV3032_REG_CTRL2, &ctrl2);
-    ctrl2 |= (1 << 3); // Set AIE
-    rv3032_write(RV3032_REG_CTRL2, ctrl2);
-
-    ESP_LOGI("RTC", "Alarm set for %02d:%02d", dec_hr, dec_min);
-}
-
 void app_main()
 {
     // IMPORTANT: Set power hold HIGH immediately
@@ -1070,11 +948,6 @@ void app_main()
     power_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&power_conf);
     
-    //-------------ADC1 Init---------------//
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
 
     output_buffer = (char*)heap_caps_malloc(MAX_HTTP_OUTPUT_BUFFER, MALLOC_CAP_SPIRAM);
   
@@ -1127,11 +1000,20 @@ void app_main()
     // We read sensor here
     scd_read();
 
-    printf("Attempt to read RTC\n");
-    i2c_master_init();
-    rv3032_clear_alarm_flag();
-    rv3032_set_alarm_30s_later();
-    rv3032_debug_status(); // OUTPUT Current RV-time
+    printf("Read RTC\n");
+    struct tm myTime;
+    int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
+    if (rc != RTC_SUCCESS) {
+        printf("Error initializing the RTC; stopping...\n");
+        while (1) {
+            vTaskDelay(1);
+        }
+    }
+    myTime.tm_hour = 21;
+    myTime.tm_min = 20;
+    myTime.tm_sec = 00;
+    rtc.clearAlarms();
+    rtc.setTime(&myTime);
    
     printf("app_network_init: Initialize Wi-Fi");
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
