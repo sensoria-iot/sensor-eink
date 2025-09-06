@@ -4,7 +4,16 @@
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
 #define RV3032_INT_PIN    2
+#define I2C_ADDR_RV3032 0x51 // 7-bit address RTC
 
+#define RV3032_REG_SECONDS 0x01
+#define RV3032_REG_MINUTES 0x02
+#define RV3032_REG_HOURS   0x03
+#define RV3032_REG_ALM_MIN 0x08
+#define RV3032_REG_ALM_HR  0x09
+#define RV3032_REG_ALM_DATE 0x0A
+#define RV3032_REG_CTRL2   0x11
+#define RV3032_REG_STATUS  0x0D
 // RTC Alarm
 #define I2C_MASTER_NUM I2C_NUM_0
 volatile bool rtc_alarm_triggered = false;
@@ -157,25 +166,77 @@ extern "C"
 
 void deep_sleep()
 {
-    printf("15 seconds wait before sleep\n");
-    vTaskDelay(15000 / portTICK_PERIOD_MS);
+    printf("5 seconds wait before sleep\n");
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
     
     ESP_LOGI(pcTaskGetName(0), "DEEP_SLEEP_MINUTES: %d mins to wake-up", nvs_minutes_till_refresh);
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
-int adc_read_batt() {
-    int batt = 0;
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC2_CHANNEL, &adc_raw[0][0]));
-    ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC2_CHANNEL, adc_raw[0][0]);
-    if (do_calibration1_chan0) {
-        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
-        // TODO: Use different formula for this
-        batt = ((adc_raw[0][0]*0.1) - 55) *3;
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV BATT: %d %%", ADC_UNIT_1 + 1, ADC2_CHANNEL, voltage[0][0], batt);
-    }
-    return batt;
+// Used by RV-3032 RTC: Convert decimal to BCD
+static uint8_t dec_to_bcd(uint8_t val) {
+    return ((val / 10) << 4) | (val % 10);
 }
+
+// Write 1 byte to RV-3032
+esp_err_t rv3032_write(uint8_t reg, uint8_t val) {
+    return i2c_master_write_to_device(I2C_MASTER_NUM, I2C_ADDR_RV3032, (uint8_t[]){reg, val}, 2, 100 / portTICK_PERIOD_MS);
+}
+
+// Read 1 byte from RV-3032
+esp_err_t rv3032_read(uint8_t reg, uint8_t *val) {
+    return i2c_master_write_read_device(I2C_MASTER_NUM, I2C_ADDR_RV3032, &reg, 1, val, 1, 100 / portTICK_PERIOD_MS);
+}
+
+// Clear alarm flag manually
+void rv3032_clear_alarm_flag() {
+    uint8_t status;
+    rv3032_read(RV3032_REG_STATUS, &status);
+    status &= ~(1 << 3);  // Clear AF bit (bit 3)
+    rv3032_write(RV3032_REG_STATUS, status);
+    ESP_LOGI("RTC", "Alarm flag cleared.");
+}
+
+void rtc_int_gpio_init() {
+	gpio_config_t io_conf = {};
+	io_conf.intr_type = GPIO_INTR_NEGEDGE; // Falling edge = INT̅ active
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pin_bit_mask = (1ULL << RV3032_INT_PIN);
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE; // You already have R45 external
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+	ESP_LOGI("RTC", "Installing ISR service...");
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+
+    ESP_LOGI("RTC", "Attaching ISR handler...");
+    ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)RV3032_INT_PIN, rtc_int_isr_handler, NULL));
+}
+
+void rv3032_debug_status() {
+    uint8_t sec, min, hr, alm_min, alm_hr, alm_date;
+    uint8_t ctrl2, status;
+
+    rv3032_read(RV3032_REG_SECONDS, &sec);
+    rv3032_read(RV3032_REG_MINUTES, &min);
+    rv3032_read(RV3032_REG_HOURS, &hr);
+
+    rv3032_read(RV3032_REG_ALM_MIN, &alm_min);
+    rv3032_read(RV3032_REG_ALM_HR, &alm_hr);
+    rv3032_read(RV3032_REG_ALM_DATE, &alm_date);
+
+    rv3032_read(RV3032_REG_CTRL2, &ctrl2);
+    rv3032_read(RV3032_REG_STATUS, &status);
+	
+    int int_level = gpio_get_level((gpio_num_t)RV3032_INT_PIN);
+
+    ESP_LOGI("RTC-DEBUG", "Current time: %02x:%02x:%02x", hr, min, sec);
+    ESP_LOGI("RTC-DEBUG", "Alarm set:    %02x:%02x date: 0x%02x", alm_hr, alm_min, alm_date);
+    ESP_LOGI("RTC-DEBUG", "CTRL2: 0x%02x (AIE=%d)", ctrl2, (ctrl2 >> 3) & 1);
+    ESP_LOGI("RTC-DEBUG", "STATUS: 0x%02x (AF=%d)", status, (status >> 3) & 1);
+    ESP_LOGI("RTC-DEBUG", "INT̅ pin level: %d (should be LOW when asserted)", int_level);
+}
+
 
 // Event handler for HTTP requests
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
@@ -776,7 +837,7 @@ void epd_print_error(char *message)
 }
 
 void read_batt_level() {
-   batt_level = adc_read_batt();
+   batt_level = 100;
 
    if (batt_level < LOW_BATT_ALERT) {
     epaper.setFont(ubuntu_L_30);
@@ -932,77 +993,74 @@ void scd_read()
     sensirion_i2c_hal_free();
 }
 
-/*---------------------------------------------------------------
-        ADC Calibration
----------------------------------------------------------------*/
-static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
-{
-    adc_cali_handle_t handle = NULL;
-    esp_err_t ret = ESP_FAIL;
-    bool calibrated = false;
+void i2c_master_init() {
+    i2c_config_t conf;
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = CONFIG_SDA_GPIO;
+    conf.scl_io_num = CONFIG_SCL_GPIO;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = 100000;
+    conf.clk_flags = 0;
 
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    if (!calibrated) {
-        ESP_LOGI(TAG, "calibration scheme version is %s", "Curve Fitting");
-        adc_cali_curve_fitting_config_t cali_config = {
-            .unit_id = unit,
-            .chan = channel,
-            .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
-        if (ret == ESP_OK) {
-            calibrated = true;
-        }
-    }
-#endif
-
-#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    if (!calibrated) {
-        ESP_LOGI(TAG, "calibration scheme version is %s", "Line Fitting");
-        adc_cali_line_fitting_config_t cali_config = {
-            .unit_id = unit,
-            .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
-        if (ret == ESP_OK) {
-            calibrated = true;
-        }
-    }
-#endif
-
-    *out_handle = handle;
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Calibration Success");
-    } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
-        ESP_LOGW(TAG, "eFuse not burnt, skip software calibration");
-    } else {
-        ESP_LOGE(TAG, "Invalid arg or no memory");
-    }
-
-    return calibrated;
+    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
+    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
 }
 
-static void adc_calibration_deinit(adc_cali_handle_t handle)
-{
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Curve Fitting");
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
+// Set alarm 30s in the future
+void rv3032_set_alarm_30s_later() {
+    uint8_t sec, min, hr;
+    rv3032_read(RV3032_REG_SECONDS, &sec);
+    rv3032_read(RV3032_REG_MINUTES, &min);
+    rv3032_read(RV3032_REG_HOURS, &hr);
 
-#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Line Fitting");
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
-#endif
+    sec &= 0x7F;
+    min &= 0x7F;
+    hr  &= 0x3F;
+
+    uint8_t dec_sec = ((sec >> 4) * 10) + (sec & 0x0F);
+    uint8_t dec_min = ((min >> 4) * 10) + (min & 0x0F);
+    uint8_t dec_hr  = ((hr  >> 4) * 10) + (hr  & 0x0F);
+
+    // Add 30 seconds
+    dec_sec += 120; //60
+    if (dec_sec >= 60) {
+        dec_sec -= 60;
+        dec_min += 1;
+        if (dec_min >= 60) {
+            dec_min = 0;
+            dec_hr = (dec_hr + 1) % 24;
+        }
+    }
+
+    uint8_t bcd_min = dec_to_bcd(dec_min);
+    uint8_t bcd_hr  = dec_to_bcd(dec_hr);
+
+    // Set alarm for that minute/hour, ignore date
+    rv3032_write(RV3032_REG_ALM_MIN, bcd_min & 0x7F); // AE_M = 0
+    rv3032_write(RV3032_REG_ALM_HR,  bcd_hr & 0x7F);   // AE_H = 0
+    rv3032_write(RV3032_REG_ALM_DATE, 0x80);          // AE_D = 1 → disable date
+
+    // Enable alarm interrupt
+    uint8_t ctrl2;
+    rv3032_read(RV3032_REG_CTRL2, &ctrl2);
+    ctrl2 |= (1 << 3); // Set AIE
+    rv3032_write(RV3032_REG_CTRL2, ctrl2);
+
+    ESP_LOGI("RTC", "Alarm set for %02d:%02d", dec_hr, dec_min);
 }
 
 void app_main()
 {
-    // Hello Program
+    // IMPORTANT: Set power hold HIGH immediately
+    gpio_reset_pin((gpio_num_t)POWER_HOLD_PIN);
+    gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 1);
+    
+    rtc_int_gpio_init();
     printf("RTC version 1.3\n");
 
-    gpio_set_direction((gpio_num_t) POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level((gpio_num_t) POWER_HOLD_PIN, 1); // HOLD Power on
+    
     // Configure power state pin as input
     gpio_config_t power_conf = {};
     power_conf.mode = GPIO_MODE_INPUT;
@@ -1024,16 +1082,6 @@ void app_main()
         ESP_LOGE(TAG, "Failed to allocate memory for output buffer");
         return;
     }
-
-    //-------------ADC1 Config---------------//
-    adc_oneshot_chan_cfg_t config = {
-        .atten = ADC_ATTEN,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC2_CHANNEL, &config));
-
-    //-------------ADC1 Calibration Init---------------//
-    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC2_CHANNEL, ADC_ATTEN, &adc1_cali_chan0_handle);
 
     esp_err_t err;
     // WiFi log level
@@ -1078,6 +1126,12 @@ void app_main()
 
     // We read sensor here
     scd_read();
+
+    printf("Attempt to read RTC\n");
+    i2c_master_init();
+    rv3032_clear_alarm_flag();
+    rv3032_set_alarm_30s_later();
+    rv3032_debug_status(); // OUTPUT Current RV-time
    
     printf("app_network_init: Initialize Wi-Fi");
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
@@ -1160,7 +1214,7 @@ void app_main()
         // Waiting for WiFi
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    
+
     send_data_to_api();
 
     deep_sleep();
