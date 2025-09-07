@@ -336,6 +336,32 @@ void parse_json(const char* json_string)
     cJSON *alert_v = cJSON_GetObjectItem(root, "alert_v");
     cJSON *message = cJSON_GetObjectItem(root, "message");
 
+    // Parse alarm
+    struct tm cTime;
+    struct tm aTime;
+    cTime.tm_sec = 0;
+    aTime.tm_sec = 0;
+    cJSON *alarm = cJSON_GetObjectItem(root, "alarm");
+    if (alarm) {
+        aTime.tm_mday = cJSON_GetObjectItem(alarm, "day")->valueint;
+        aTime.tm_mon  = cJSON_GetObjectItem(alarm, "mo")->valueint;
+        aTime.tm_year = cJSON_GetObjectItem(alarm, "year")->valueint;
+        aTime.tm_hour = cJSON_GetObjectItem(alarm, "hr")->valueint;
+        aTime.tm_min = cJSON_GetObjectItem(alarm, "min")->valueint;
+        printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    }
+
+    // Parse datetime
+    cJSON *datetime = cJSON_GetObjectItem(root, "datetime");
+    if (datetime) {
+        cTime.tm_mday = cJSON_GetObjectItem(datetime, "day")->valueint;
+        cTime.tm_mon  = cJSON_GetObjectItem(datetime, "mo")->valueint;
+        cTime.tm_year = cJSON_GetObjectItem(datetime, "year")->valueint;
+        cTime.tm_hour = cJSON_GetObjectItem(datetime, "hr")->valueint;
+        cTime.tm_min = cJSON_GetObjectItem(datetime, "min")->valueint;
+        printf("DateTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
+    }
+
     if (cJSON_IsNumber(sleep_minutes)) {
         printf("Decoded sleep_minutes: %d\n", sleep_minutes->valueint);
         nvs_minutes_till_refresh = sleep_minutes->valueint;
@@ -380,6 +406,11 @@ void parse_json(const char* json_string)
     }
     // Clean up
     cJSON_Delete(root);
+
+    // Set RTC values
+    // TODO: Update time to be set only once per day
+    rtc.setTime(&cTime);
+    rtc.setAlarm(ALARM_DATE, &aTime);
 }
 
 /**
@@ -652,11 +683,12 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             case RMAKER_MQTT_EVENT_DISCONNECTED:
                 ESP_LOGI(TAG, "MQTT Disconnected.");
                 break;
-            case RMAKER_MQTT_EVENT_PUBLISHED:
+            case RMAKER_MQTT_EVENT_PUBLISHED: 
                 ESP_LOGI(TAG, "MQTT Published. Msg id: %d.", *((int *)event_data));
                 // Ready to do something?
                 ready_to_measure = true;
                 break;
+                
             default:
                 ESP_LOGW(TAG, "Unhandled RainMaker Common Event: %"PRIi32, event_id);
         }
@@ -925,6 +957,7 @@ void scd_read()
     vTaskDelay(pdMS_TO_TICKS(300));
     ESP_LOGI(TAG, "scd4x_power_down()");
     scd4x_power_down();
+
     sensirion_i2c_hal_free();
 }
 
@@ -1009,11 +1042,11 @@ void app_main()
             vTaskDelay(1);
         }
     }
-    myTime.tm_hour = 21;
-    myTime.tm_min = 20;
-    myTime.tm_sec = 00;
+
+    // RTC Clear current alarms and get time
     rtc.clearAlarms();
-    rtc.setTime(&myTime);
+    rtc.getTime(&myTime);
+    printf("%02d:%02d:%02d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec);
    
     printf("app_network_init: Initialize Wi-Fi");
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
@@ -1072,6 +1105,7 @@ void app_main()
 
     /* Start the ESP RainMaker Agent */
     esp_rmaker_start();
+
     /* Uncomment to reset WiFi credentials when there is no Boot button in the ESP32 */
     //esp_rmaker_wifi_reset(1,10);return;
     
