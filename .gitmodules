@@ -4,3 +4,9 @@
 [submodule "components/fastepd"]
 	path = components/fastepd
 	url = https://github.com/bitbank2/FastEPD.git
+[submodule "components/bb_rtc"]
+	path = components/bb_rtc
+	url = https://github.com/bitbank2/bb_rtc.git
+[submodule "components/BQ27426_idf"]
+	path = components/BQ27426_idf
+	url = https://github.com/martinberlin/BQ27426_idf.git
