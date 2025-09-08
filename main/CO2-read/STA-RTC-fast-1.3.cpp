@@ -516,7 +516,7 @@ void parse_json(const char* json_string)
     rtc.setTime(&cTime);
     printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
     
-    rtc.setAlarm(ALARM_TIME, &aTime); // has to be ALARM_DATE
+    rtc.setAlarm(ALARM_DAY, &aTime); // has to be ALARM_DAY
 }
 
 /**
@@ -1170,7 +1170,7 @@ void app_main()
 
     printf("Read RTC\n");
     struct tm myTime;
-    int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
+    int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO); // Do not init, already done. CONFIG_SDA_GPIO, CONFIG_SCL_GPIO
     if (rc != RTC_SUCCESS) {
         printf("Error initializing the RTC; stopping...\n");
         while (1) {
