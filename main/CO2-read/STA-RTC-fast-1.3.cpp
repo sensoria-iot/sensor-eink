@@ -17,6 +17,102 @@ extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
 // FastEPD component:
 #include "FastEPD.cpp"
 FASTEPD epaper;
+
+#define ADC_VOLTAGE_READ
+// BQ27426 fuel gauge (For next revision)
+//#include "TiFuelGauge.h"
+//TiFuelGauge TiFuel;
+
+#ifdef ADC_VOLTAGE_READ
+    #include "soc/soc_caps.h"
+    #include "esp_adc/adc_oneshot.h"
+    #include "esp_adc/adc_cali.h"
+    #include "esp_adc/adc_cali_scheme.h"
+    #define ADC2_CHANNEL ADC_CHANNEL_0  // IO1
+    #define ADC_ATTEN    ADC_ATTEN_DB_12
+    static int adc_raw[1][10];
+    static int voltage[1][10];
+    adc_oneshot_unit_handle_t adc1_handle;
+    adc_cali_handle_t adc1_cali_chan0_handle = NULL;
+    bool do_calibration1_chan0 = false;
+    int batt_level = 100;
+
+    int adc_read_batt() {
+        int batt = 0;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC2_CHANNEL, &adc_raw[0][0]));
+        ESP_LOGI("ADC", "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC2_CHANNEL, adc_raw[0][0]);
+        if (do_calibration1_chan0) {
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
+            // TODO: Use different formula for this
+            batt = ((adc_raw[0][0]*0.1) - 55) *3;
+            ESP_LOGI("ADC", "ADC%d Channel[%d] Cali Voltage: %d mV BATT: %d %%", ADC_UNIT_1 + 1, ADC2_CHANNEL, voltage[0][0], batt);
+        }
+        return batt;
+    }
+    /*---------------------------------------------------------------
+        ADC Calibration
+    ---------------------------------------------------------------*/
+    static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
+    {
+        adc_cali_handle_t handle = NULL;
+        esp_err_t ret = ESP_FAIL;
+        bool calibrated = false;
+
+    #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+        if (!calibrated) {
+            ESP_LOGI("ADC", "calibration scheme version is %s", "Curve Fitting");
+            adc_cali_curve_fitting_config_t cali_config = {
+                .unit_id = unit,
+                .chan = channel,
+                .atten = atten,
+                .bitwidth = ADC_BITWIDTH_DEFAULT,
+            };
+            ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
+            if (ret == ESP_OK) {
+                calibrated = true;
+            }
+        }
+    #endif
+
+    #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        if (!calibrated) {
+            ESP_LOGI("ADC", "calibration scheme version is %s", "Line Fitting");
+            adc_cali_line_fitting_config_t cali_config = {
+                .unit_id = unit,
+                .atten = atten,
+                .bitwidth = ADC_BITWIDTH_DEFAULT,
+            };
+            ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
+            if (ret == ESP_OK) {
+                calibrated = true;
+            }
+        }
+    #endif
+
+        *out_handle = handle;
+        if (ret == ESP_OK) {
+            ESP_LOGI("ADC", "Calibration Success");
+        } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
+            ESP_LOGW("ADC", "eFuse not burnt, skip software calibration");
+        } else {
+            ESP_LOGE("ADC", "Invalid arg or no memory");
+        }
+
+        return calibrated;
+    }
+
+    static void adc_calibration_deinit(adc_cali_handle_t handle)
+    {
+    #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+        ESP_LOGI("ADC", "deregister %s calibration scheme", "Curve Fitting");
+        ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
+
+    #elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        ESP_LOGI("ADC", "deregister %s calibration scheme", "Line Fitting");
+        ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
+    #endif
+    }
+#endif
 // Fonts
 #include "fast/ubuntu12.h"
 #include "fast/ubuntu20.h"
@@ -88,7 +184,6 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 #include "driver/gpio.h"
 #include "esp_log.h"
 
-int batt_level = 100;
 // WIFI
 #include "esp_tls.h"
 #include "esp_netif.h"
@@ -150,14 +245,20 @@ extern "C"
 
 void deep_sleep()
 {
-    printf("5 seconds wait before sleep\n");
+    printf("5 seconds wait before OFF\n");
     vTaskDelay(5000 / portTICK_PERIOD_MS);
-    
+    // TURN ALL OFF
+    gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 0);
     ESP_LOGI(pcTaskGetName(0), "DEEP_SLEEP_MINUTES: %d mins to wake-up", nvs_minutes_till_refresh);
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
-void rtc_int_gpio_init() {
+/**
+ * @deprecated
+ * 
+ */
+#ifdef RTC_GPIO_INIT
+ void rtc_int_gpio_init() {
 	gpio_config_t io_conf = {};
 	io_conf.intr_type = GPIO_INTR_NEGEDGE; // Falling edge = INT̅ active
 	io_conf.mode = GPIO_MODE_INPUT;
@@ -172,6 +273,7 @@ void rtc_int_gpio_init() {
     ESP_LOGI("RTC", "Attaching ISR handler...");
     ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)RV3032_INT_PIN, rtc_int_isr_handler, NULL));
 }
+#endif
 
 // Event handler for HTTP requests
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
@@ -348,12 +450,12 @@ void parse_json(const char* json_string)
         aTime.tm_year = cJSON_GetObjectItem(alarm, "year")->valueint;
         aTime.tm_hour = cJSON_GetObjectItem(alarm, "hr")->valueint;
         aTime.tm_min = cJSON_GetObjectItem(alarm, "min")->valueint;
-        printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
     }
 
     // Parse datetime
     cJSON *datetime = cJSON_GetObjectItem(root, "datetime");
     if (datetime) {
+        cTime.tm_wday = cJSON_GetObjectItem(datetime, "wday")->valueint;
         cTime.tm_mday = cJSON_GetObjectItem(datetime, "day")->valueint;
         cTime.tm_mon  = cJSON_GetObjectItem(datetime, "mo")->valueint;
         cTime.tm_year = cJSON_GetObjectItem(datetime, "year")->valueint;
@@ -409,8 +511,12 @@ void parse_json(const char* json_string)
 
     // Set RTC values
     // TODO: Update time to be set only once per day
+    //aTime.tm_hour = 10; //DEBUG
+    //aTime.tm_min = 59; //DEBUG
     rtc.setTime(&cTime);
-    rtc.setAlarm(ALARM_DATE, &aTime);
+    printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    
+    rtc.setAlarm(ALARM_TIME, &aTime); // has to be ALARM_DATE
 }
 
 /**
@@ -804,7 +910,11 @@ void epd_print_error(char *message)
 }
 
 void read_batt_level() {
-   batt_level = 100;
+    batt_level = adc_read_batt();
+   /* if (TiFuel.is_connected()) {
+    batt_level = TiFuel.read_state_of_charge();
+    printf("voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
+   } */
 
    if (batt_level < LOW_BATT_ALERT) {
     epaper.setFont(ubuntu_L_30);
@@ -968,8 +1078,33 @@ void app_main()
     gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 1);
     
-    rtc_int_gpio_init();
     printf("RTC version 1.3\n");
+
+    #ifdef ADC_VOLTAGE_READ
+//-------------ADC1 Init---------------//
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    output_buffer = (char*)heap_caps_malloc(MAX_HTTP_OUTPUT_BUFFER, MALLOC_CAP_SPIRAM);
+  
+    if (output_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for output buffer");
+        return;
+    }
+
+    //-------------ADC1 Config---------------//
+    adc_oneshot_chan_cfg_t config = {
+        .atten = ADC_ATTEN,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC2_CHANNEL, &config));
+
+    //-------------ADC1 Calibration Init---------------//
+    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC2_CHANNEL, ADC_ATTEN, &adc1_cali_chan0_handle);
+
+    #endif
 
     
     // Configure power state pin as input
@@ -1048,7 +1183,6 @@ void app_main()
     rtc.getTime(&myTime);
     printf("%02d:%02d:%02d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec);
    
-    printf("app_network_init: Initialize Wi-Fi");
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
     app_network_init();
 

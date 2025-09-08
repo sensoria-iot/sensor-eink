@@ -11,6 +11,7 @@ set(app_sources "CO2-read/STA-RTC-fast-1.3.cpp")
 set(app_requires  
                  fastepd
                  bb_rtc
+                 BQ27426_idf
                  json
                  scd40      # sensor
                  qrcode esp_rainmaker  # Wi-FI provision
