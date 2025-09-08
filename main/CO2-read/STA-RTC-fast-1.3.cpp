@@ -192,6 +192,7 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 // RTC
 #include <bb_rtc.h>
 BBRTC rtc;
+uint8_t rtc_day = 0;
 //#include <app_insights.h>
 esp_rmaker_device_t *temp_sensor_device;
 
@@ -252,28 +253,6 @@ void deep_sleep()
     ESP_LOGI(pcTaskGetName(0), "DEEP_SLEEP_MINUTES: %d mins to wake-up", nvs_minutes_till_refresh);
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
-
-/**
- * @deprecated
- * 
- */
-#ifdef RTC_GPIO_INIT
- void rtc_int_gpio_init() {
-	gpio_config_t io_conf = {};
-	io_conf.intr_type = GPIO_INTR_NEGEDGE; // Falling edge = INT̅ active
-	io_conf.mode = GPIO_MODE_INPUT;
-	io_conf.pin_bit_mask = (1ULL << RV3032_INT_PIN);
-	io_conf.pull_up_en = GPIO_PULLUP_DISABLE; // You already have R45 external
-	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	ESP_ERROR_CHECK(gpio_config(&io_conf));
-
-	ESP_LOGI("RTC", "Installing ISR service...");
-    ESP_ERROR_CHECK(gpio_install_isr_service(0));
-
-    ESP_LOGI("RTC", "Attaching ISR handler...");
-    ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)RV3032_INT_PIN, rtc_int_isr_handler, NULL));
-}
-#endif
 
 // Event handler for HTTP requests
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
@@ -461,7 +440,6 @@ void parse_json(const char* json_string)
         cTime.tm_year = cJSON_GetObjectItem(datetime, "year")->valueint;
         cTime.tm_hour = cJSON_GetObjectItem(datetime, "hr")->valueint;
         cTime.tm_min = cJSON_GetObjectItem(datetime, "min")->valueint;
-        printf("DateTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
     }
 
     if (cJSON_IsNumber(sleep_minutes)) {
@@ -511,12 +489,16 @@ void parse_json(const char* json_string)
 
     // Set RTC values
     // TODO: Update time to be set only once per day
-    //aTime.tm_hour = 10; //DEBUG
-    //aTime.tm_min = 59; //DEBUG
-    rtc.setTime(&cTime);
-    printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    //aTime.tm_hour = 15; //DEBUG
+    //aTime.tm_min = 50; //DEBUG
+    if (rtc_day != cTime.tm_mday) {
+        rtc.setTime(&cTime);
+        printf("New day, setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
     
-    rtc.setAlarm(ALARM_DAY, &aTime); // has to be ALARM_DAY
+    }
+    printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    // has to be ALARM_DAY when changes day
+    rtc.setAlarm((rtc_day == aTime.tm_mday) ? ALARM_TIME : ALARM_DAY, &aTime);
 }
 
 /**
@@ -1181,7 +1163,8 @@ void app_main()
     // RTC Clear current alarms and get time
     rtc.clearAlarms();
     rtc.getTime(&myTime);
-    printf("%02d:%02d:%02d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec);
+    rtc_day = myTime.tm_mday;
+    printf("%02d:%02d:%02d DAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday);
    
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
     app_network_init();
