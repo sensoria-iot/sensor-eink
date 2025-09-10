@@ -9,6 +9,9 @@
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
 // RTC Alarm
 volatile bool rtc_alarm_triggered = false;
+uint8_t alarm_day = 0;
+uint8_t alarm_hour = 0;
+uint8_t alarm_min = 0;
 
 extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
     rtc_alarm_triggered = true;
@@ -429,6 +432,9 @@ void parse_json(const char* json_string)
         aTime.tm_year = cJSON_GetObjectItem(alarm, "year")->valueint;
         aTime.tm_hour = cJSON_GetObjectItem(alarm, "hr")->valueint;
         aTime.tm_min = cJSON_GetObjectItem(alarm, "min")->valueint;
+        alarm_day = aTime.tm_mday;
+        alarm_hour = aTime.tm_hour;
+        alarm_min = aTime.tm_min;
     }
 
     // Parse datetime
@@ -491,14 +497,15 @@ void parse_json(const char* json_string)
     // TODO: Update time to be set only once per day
     //aTime.tm_hour = 15; //DEBUG
     //aTime.tm_min = 50; //DEBUG
-    if (rtc_day != cTime.tm_mday) {
+    if (rtc_day != aTime.tm_mday) {
         rtc.setTime(&cTime);
-        printf("New day, setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
-    
+        printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
+        // has to be ALARM_DAY when changes day
+        rtc.setAlarm(ALARM_DAY, &aTime);
+    } else {
+        rtc.setAlarm(ALARM_TIME, &aTime);
     }
     printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
-    // has to be ALARM_DAY when changes day
-    rtc.setAlarm((rtc_day == aTime.tm_mday) ? ALARM_TIME : ALARM_DAY, &aTime);
 }
 
 /**
@@ -591,7 +598,7 @@ void draw_response_analisis(int tipo) {
 
     BB_RECT box;
     box.x = 0;
-    box.y = 50;
+    box.y = 40;
     box.w = EPD_WIDTH;
     box.h = EPD_HEIGHT-230;
     // draw design guides
@@ -603,6 +610,12 @@ void draw_response_analisis(int tipo) {
     // Confidence & next alert
     epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, 0x0);
     epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, 0x0);
+
+    // NEXT Alarm
+    epaper.setFont(ubuntu12);
+    textbuffer[0] = '\0';
+    snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d", alarm_day, alarm_hour, alarm_min);
+    epaper.drawString(textbuffer, gridx1, 58);
 
     epaper.fullUpdate(false, false, &box);
 }
@@ -733,11 +746,13 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
             case RMAKER_EVENT_CLAIM_STARTED:
                 ESP_LOGI(TAG, "RainMaker Claim Started.");
+                epaper.fillScreen(15);
+                epaper.fullUpdate(2, false);
                 break;
             case RMAKER_EVENT_CLAIM_SUCCESSFUL:
                 ESP_LOGI(TAG, "RainMaker Claim Successful.");
                 epaper.fillScreen(16);
-                epaper.fullUpdate(false, false);
+                epaper.fullUpdate(2, false);
                 break;
             case RMAKER_EVENT_CLAIM_FAILED:
                 ESP_LOGI(TAG, "RainMaker Claim Failed.");
