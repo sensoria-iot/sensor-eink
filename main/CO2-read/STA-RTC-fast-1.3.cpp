@@ -497,13 +497,17 @@ void parse_json(const char* json_string)
     // TODO: Update time to be set only once per day
     //aTime.tm_hour = 15; //DEBUG
     //aTime.tm_min = 50; //DEBUG
-    if (rtc_day != aTime.tm_mday) {
+    
+    // TODO: Check bug with day 1 of each month. Alarm is not being triggered
+    if (rtc_day != aTime.tm_mday && aTime.tm_mday != 1) {
         rtc.setTime(&cTime);
-        printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
-        // has to be ALARM_DAY when changes day
+        aTime.tm_mday = aTime.tm_mday-1; // BUG with mday
+        printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday-1, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
+        // Has to be ALARM_DAY when changes day
         rtc.setAlarm(ALARM_DAY, &aTime);
     } else {
-        rtc.setAlarm(ALARM_TIME, &aTime);
+        // Should be ALARM_TIME on same day
+        rtc.setAlarm(ALARM_TIME, &aTime); 
     }
     printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
 }
@@ -742,26 +746,31 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     if (event_base == RMAKER_EVENT) {
         switch (event_id) {
             case RMAKER_EVENT_INIT_DONE:
-                ESP_LOGI(TAG, "RainMaker Initialised.");
+                ESP_LOGI(TAG, "EVENT RainMaker Initialised.");
                 break;
             case RMAKER_EVENT_CLAIM_STARTED:
-                ESP_LOGI(TAG, "RainMaker Claim Started.");
-                epaper.fillScreen(15);
-                epaper.fullUpdate(2, false);
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Started.");
+                epaper.fillScreen(16);
+                epaper.fullUpdate(CLEAR_FAST, false);
+                vTaskDelay(pdMS_TO_TICKS(300));
                 break;
             case RMAKER_EVENT_CLAIM_SUCCESSFUL:
-                ESP_LOGI(TAG, "RainMaker Claim Successful.");
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Successful.");
                 epaper.fillScreen(16);
-                epaper.fullUpdate(2, false);
+                epaper.fullUpdate(CLEAR_FAST, false);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                break;
+            case RMAKER_EVENT_USER_NODE_MAPPING_DONE:
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_CLAIM_FAILED:
-                ESP_LOGI(TAG, "RainMaker Claim Failed.");
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_LOCAL_CTRL_STARTED:
-                ESP_LOGI(TAG, "Local Control Started.");
+                ESP_LOGI(TAG, "EVENT Local Control Started.");
                 break;
             case RMAKER_EVENT_LOCAL_CTRL_STOPPED:
-                ESP_LOGI(TAG, "Local Control Stopped.");
+                ESP_LOGI(TAG, "EVENT Local Control Stopped.");
                 break;
             default:
                 ESP_LOGW(TAG, "Unhandled RainMaker Event: %"PRIi32, event_id);
@@ -773,8 +782,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
             case RMAKER_EVENT_WIFI_RESET:
                 ESP_LOGI(TAG, "Wi-Fi credentials reset.");
-                epaper.drawString("Wi-Fi credentials are cleared", 10, 10);
-                epaper.drawString("Will start in WiFi provisioning mode", 10, 30);
+                epaper.drawString("Wi-Fi credentials are cleared", 10, 45);
+                epaper.drawString("Will start in WiFi provisioning mode", 10, 100);
                 epaper.fullUpdate();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
@@ -803,6 +812,14 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 esp_qrcode_generate(&cfg_qr, (const char *)event_data);
                 break;
                 }
+            case APP_NETWORK_EVENT_PROV_TIMEOUT: {
+                 ESP_LOGI("NETWORK_EVENT", "Provisioning timed-out");
+                 epaper.fillRect(1, 80, EPD_WIDTH, 400, 0x0);
+                 epaper.fillRect(1, 80, EPD_WIDTH, 400, 0xF);
+                 epaper.drawString("Provisioning timed-out.", 10, 110);
+                 epaper.drawString("Please reset the device!", 10, 160);
+                 epaper.fullUpdate();
+            }
             default:
                 ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %"PRIi32, event_id);
                 break;
@@ -902,7 +919,7 @@ void epd_print_error(char *message)
     epaper.drawString(message, x, y);
 
     epaper.fullUpdate(true, false);
-    vTaskDelay(200);
+    vTaskDelay(pdMS_TO_TICKS(300));
     deep_sleep();
 }
 
@@ -1170,17 +1187,17 @@ void app_main()
     int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO); // Do not init, already done. CONFIG_SDA_GPIO, CONFIG_SCL_GPIO
     if (rc != RTC_SUCCESS) {
         printf("Error initializing the RTC; stopping...\n");
-        while (1) {
+        /* while (1) {
             vTaskDelay(1);
-        }
-    }
+        } */
+    } else {
 
     // RTC Clear current alarms and get time
     rtc.clearAlarms();
     rtc.getTime(&myTime);
     rtc_day = myTime.tm_mday;
-    printf("%02d:%02d:%02d DAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday);
-   
+    printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon, myTime.tm_wday);
+    }
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
     app_network_init();
 
@@ -1253,10 +1270,6 @@ void app_main()
         vTaskDelay(5000/portTICK_PERIOD_MS);
         abort();
     }
-
-    // Initialize SCD40
-    //ESP_LOGI(TAG, "CONFIG_SCL_GPIO = %d", CONFIG_SCL_GPIO);
-    //ESP_LOGI(TAG, "CONFIG_SDA_GPIO = %d", CONFIG_SDA_GPIO);
 
     while (!ready_to_measure) {
         // Waiting for WiFi
