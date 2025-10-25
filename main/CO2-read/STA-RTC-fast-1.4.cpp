@@ -21,6 +21,10 @@ extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
 #include "FastEPD.cpp"
 FASTEPD epaper;
 
+// Dotstar 2812 LED in the strip
+#include "led_controller.h"
+
+
 #define ADC_VOLTAGE_READ
 // BQ27426 fuel gauge (For next revision)
 //#include "TiFuelGauge.h"
@@ -811,6 +815,7 @@ void send_data_to_api()
 
     // If we have headers and a status:
     if (status >= 500) {
+        led_blink_start(50, 0, 0, 500); // RED
         ESP_LOGW(TAG, "Server returned %d - skipping body download", status);
         // Friendly message on display and schedule retry
         snprintf(res_message, sizeof(res_message), "Cloud data not available");
@@ -854,6 +859,7 @@ void send_data_to_api()
     else local_response_buffer[MAX_HTTP_OUTPUT_BUFFER] = '\0';
 
     if (total_read == 0) {
+        led_blink_start(50, 0, 0, 500); // RED
         ESP_LOGW(TAG, "Empty response body");
         // friendly fallback
         snprintf(res_message, sizeof(res_message), "Cloud data not available");
@@ -958,6 +964,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGI(TAG, "EVENT RainMaker Initialised.");
                 break;
             case RMAKER_EVENT_CLAIM_STARTED:
+                led_blink_start(0, 0, 50, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Started.");
                 epaper.fillScreen(16);
                 epaper.fullUpdate(CLEAR_FAST, false);
@@ -970,9 +977,11 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 vTaskDelay(pdMS_TO_TICKS(300));
                 break;
             case RMAKER_EVENT_USER_NODE_MAPPING_DONE:
+                led_blink_start(50, 0, 0, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_CLAIM_FAILED:
+                led_blink_start(50, 0, 0, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_LOCAL_CTRL_STARTED:
@@ -1016,12 +1025,14 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == APP_NETWORK_EVENT) {
         switch (event_id) {
             case APP_NETWORK_EVENT_QR_DISPLAY: {
+                led_blink_start(0, 0, 50, 500);
                 ESP_LOGI("NETWORK_EVENT", "Provisioning QR : %s", (char *)event_data);
                 esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
                 esp_qrcode_generate(&cfg_qr, (const char *)event_data);
                 break;
                 }
             case APP_NETWORK_EVENT_PROV_TIMEOUT: {
+                 led_blink_start(50, 0, 0, 500);
                  ESP_LOGI("NETWORK_EVENT", "Provisioning timed-out");
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0xF);
@@ -1036,6 +1047,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == RMAKER_OTA_EVENT) {
         switch(event_id) {
             case RMAKER_OTA_EVENT_STARTING:
+                led_blink_start(0, 50, 0, 500);
                 ESP_LOGI(TAG, "Starting OTA.");
                 break;
             case RMAKER_OTA_EVENT_IN_PROGRESS:
@@ -1123,12 +1135,13 @@ void scd_render_h(double hum, int x, int y)
 
 void epd_print_error(char *message)
 {
+    led_blink_start(50, 0, 0, 500);
     int x = 100; // EPD_WIDTH/2-300
     int y = 20;
     epaper.drawString(message, x, y);
 
     epaper.fullUpdate(true, false);
-    vTaskDelay(pdMS_TO_TICKS(300));
+    vTaskDelay(pdMS_TO_TICKS(1000));
     deep_sleep();
 }
 
@@ -1192,6 +1205,7 @@ void scd_read()
     }
 
     // Start Measurement
+    led_blink_start(5, 5, 5, 1000);
     error = scd4x_start_periodic_measurement();
     if (error)
     {
@@ -1216,6 +1230,7 @@ void scd_read()
         if (data_ready_flag)
         {
             measure_taken = true;
+            led_blink_stop();
             break;
         }
     }
@@ -1300,8 +1315,11 @@ void app_main()
     gpio_reset_pin((gpio_num_t)POWER_HOLD_PIN);
     gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 1);
-    
-    printf("RTC version 1.3\n");
+    // Configure Dotstar LED
+    led_strip_handle_t led_strip = led_configure();
+    ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
+
+    printf("RTC version 1.4\n");
 
     #ifdef ADC_VOLTAGE_READ
 //-------------ADC1 Init---------------//

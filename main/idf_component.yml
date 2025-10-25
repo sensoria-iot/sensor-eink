@@ -9,3 +9,4 @@ dependencies:
   espressif/esp_rainmaker: ^1.5.3
   espressif/esp_insights: ^1.2.4
   espressif/qrcode: '*'
+  espressif/led_strip: ^3.0.1~1

@@ -43,3 +43,6 @@ build/
 
 # debug information files
 *.dwo
+
+# VSCODE ide
+.vscode
