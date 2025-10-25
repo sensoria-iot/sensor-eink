@@ -5,7 +5,7 @@ message(STATUS "→ Building example for ${target}")
 # 1 Send SCD40 using Rainmaker
 #set(app_sources "CO2-read/station-to-API-fast1.2.cpp") # new AI data
 
-set(app_sources "CO2-read/STA-RTC-fast-1.3.cpp")
+set(app_sources "CO2-read/STA-RTC-fast-1.4.cpp")
 
 # 4 new small white PCB C3 
 set(app_requires  
