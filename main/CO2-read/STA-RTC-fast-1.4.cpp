@@ -1347,7 +1347,6 @@ void app_main()
 
     #endif
 
-    
     // Configure power state pin as input
     gpio_config_t power_conf = {};
     power_conf.mode = GPIO_MODE_INPUT;
@@ -1356,14 +1355,6 @@ void app_main()
     power_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     power_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&power_conf);
-    
-
-    output_buffer = (char*)heap_caps_malloc(MAX_HTTP_OUTPUT_BUFFER, MALLOC_CAP_SPIRAM);
-  
-    if (output_buffer == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for output buffer");
-        return;
-    }
 
     esp_err_t err;
     // WiFi log level
