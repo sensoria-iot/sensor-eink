@@ -6,7 +6,7 @@ message(STATUS "→ Building example for ${target}")
 #set(app_sources "CO2-read/station-to-API-fast1.2.cpp") # new AI data
 
 set(app_sources "CO2-read/led_controller.c"
-                "CO2-read/STA-RTC-fast-1.4.cpp")
+                "CO2-read/STA-RTC-fast-1.5.cpp")
 
 # 4 new small white PCB C3 
 set(app_requires  
