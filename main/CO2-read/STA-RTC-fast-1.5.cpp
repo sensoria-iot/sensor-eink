@@ -406,12 +406,9 @@ void parse_json(const char* json_string)
     cJSON_Delete(root);
 
     // Set RTC values
-    // TODO: Update time to be set only once per day
-    //aTime.tm_hour = 15; //DEBUG
-    //aTime.tm_min = 50; //DEBUG
-    
+    // Update time to be set only once per day
     // TODO: Check bug with day 1 of each month. Alarm is not being triggered
-    if (rtc_day != aTime.tm_mday && aTime.tm_mday != 1) {
+    if (rtc_day != aTime.tm_mday) {
         rtc.setTime(&cTime);
         aTime.tm_mday = aTime.tm_mday-1; // BUG with mday
         printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday-1, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
@@ -572,8 +569,8 @@ static void schedule_rtc_wakeup_minutes(int minutes)
     // Small delay to ensure RTC writes settle
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    printf("RTC alarm scheduled in %d minutes -> %02d/%02d/%04d %02d:%02d\n",
-           minutes, alarm.tm_mday, alarm.tm_mon + 1, alarm.tm_year + 1900, alarm.tm_hour, alarm.tm_min);
+    printf("RTC alarm scheduled in %d minutes (day_changed:%d) -> %02d/%02d/%04d %02d:%02d\n",
+           minutes, (int)day_changed, alarm.tm_mday, alarm.tm_mon + 1, alarm.tm_year + 1900, alarm.tm_hour, alarm.tm_min);
 }
 
 // --- replacement for send_data_to_api() ---
