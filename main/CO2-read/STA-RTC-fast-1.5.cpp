@@ -1063,7 +1063,6 @@ void read_batt_level() {
    if (batt_level > 100) {
     batt_level = 100;
    }
-   batt_level = batt_level*0.8;
 
    int color = 0;
    #if DARKMODE
