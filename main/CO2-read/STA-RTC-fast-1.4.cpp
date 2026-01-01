@@ -501,17 +501,25 @@ void parse_json(const char* json_string)
     // TODO: Update time to be set only once per day
     //aTime.tm_hour = 15; //DEBUG
     //aTime.tm_min = 50; //DEBUG
-    
-    // TODO: Check bug with day 1 of each month. Alarm is not being triggered
-    if (rtc_day != aTime.tm_mday && aTime.tm_mday != 1) {
-        rtc.setTime(&cTime);
-        aTime.tm_mday = aTime.tm_mday-1; // BUG with mday
+       
+    if (rtc_day != aTime.tm_mday) {
+        rtc.setTime(&cTime); // Set the current time to the RTC
         printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday-1, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
-        // Has to be ALARM_DAY when changes day
-        rtc.setAlarm(ALARM_DAY, &aTime);
+ 
+        // Use mktime to normalize and manage transitions
+        time_t raw_time;
+        struct tm normalized_alarm = aTime;
+
+        raw_time = mktime(&normalized_alarm); // Normalize date transitions
+        localtime_r(&raw_time, &normalized_alarm); // Apply normalized date
+
+        rtc.setAlarm(ALARM_DAY, &normalized_alarm); // Set day alarm directly
+        printf("RTC Alarm Set: %02d/%02d/%04d %02d:%02d\n", 
+        normalized_alarm.tm_mday, normalized_alarm.tm_mon + 1, 
+        normalized_alarm.tm_year + 1900, normalized_alarm.tm_hour, 
+        normalized_alarm.tm_min);
     } else {
-        // Should be ALARM_TIME on same day
-        rtc.setAlarm(ALARM_TIME, &aTime); 
+        rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
     }
     printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
 }
