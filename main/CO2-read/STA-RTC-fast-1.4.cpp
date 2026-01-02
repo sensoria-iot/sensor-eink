@@ -453,7 +453,7 @@ void parse_json(const char* json_string)
     }
 
     if (cJSON_IsNumber(sleep_minutes)) {
-        printf("Decoded sleep_minutes: %d\n", sleep_minutes->valueint);
+        //printf("Decoded sleep_minutes: %d\n", sleep_minutes->valueint);
         nvs_minutes_till_refresh = sleep_minutes->valueint;
     }
     if (cJSON_IsString(sensor_tipo)) {
@@ -501,10 +501,12 @@ void parse_json(const char* json_string)
     // TODO: Update time to be set only once per day
     //aTime.tm_hour = 15; //DEBUG
     //aTime.tm_min = 50; //DEBUG
-       
-    if (rtc_day != aTime.tm_mday) {
+    
+    rtc.clearAlarms();
+    // For now set this only on DAY 5 of the week
+    if (rtc_day != aTime.tm_mday && cTime.tm_wday == 5) {
+        printf("RTC setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
         rtc.setTime(&cTime); // Set the current time to the RTC
-        printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday-1, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
  
         // Use mktime to normalize and manage transitions
         time_t raw_time;
@@ -515,8 +517,8 @@ void parse_json(const char* json_string)
 
         rtc.setAlarm(ALARM_DAY, &normalized_alarm); // Set day alarm directly
         printf("RTC Alarm Set: %02d/%02d/%04d %02d:%02d\n", 
-        normalized_alarm.tm_mday, normalized_alarm.tm_mon + 1, 
-        normalized_alarm.tm_year + 1900, normalized_alarm.tm_hour, 
+        normalized_alarm.tm_mday, normalized_alarm.tm_mon, 
+        normalized_alarm.tm_year, normalized_alarm.tm_hour, 
         normalized_alarm.tm_min);
     } else {
         rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
@@ -1418,8 +1420,7 @@ void app_main()
         } */
     } else {
 
-    // RTC Clear current alarms and get time
-    rtc.clearAlarms();
+    // RTC get time
     rtc.getTime(&myTime);
     rtc_day = myTime.tm_mday;
     printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon, myTime.tm_wday);
