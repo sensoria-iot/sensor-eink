@@ -516,14 +516,18 @@ void parse_json(const char* json_string)
         localtime_r(&raw_time, &normalized_alarm); // Apply normalized date
 
         rtc.setAlarm(ALARM_DAY, &normalized_alarm); // Set day alarm directly
-        printf("RTC Alarm Set: %02d/%02d/%04d %02d:%02d\n", 
+        printf("ALARM_DAY: %02d/%02d/%04d %02d:%02d\n", 
         normalized_alarm.tm_mday, normalized_alarm.tm_mon, 
         normalized_alarm.tm_year, normalized_alarm.tm_hour, 
         normalized_alarm.tm_min);
+    } else if (nvs_boots < 10) {
+        printf("RTC INIT setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
+        rtc.setTime(&cTime);
+        rtc.setAlarm(ALARM_TIME, &aTime);
     } else {
         rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
     }
-    printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
 }
 
 /**
@@ -953,15 +957,15 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     epaper.setFont(ubuntu20);
     char textbuffer[40];
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR1);
-    epaper.drawString(textbuffer, 450, 110);
+    epaper.drawString(textbuffer, 430, 110);
     // Reset textbuffer to empty string:
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
-    epaper.drawString(textbuffer, 450, 160);
+    epaper.drawString(textbuffer, 430, 160);
 
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", API_KEY);
-    epaper.drawString(textbuffer, 458, 310);
+    epaper.drawString(textbuffer, 462, 310);
     epaper.fullUpdate(false, false, &box);
 }
 
@@ -1047,7 +1051,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0xF);
                  epaper.drawString("Provisioning timed-out.", 10, 110);
-                 epaper.drawString("Please reset the device!", 10, 160);
+                 epaper.drawString("Press wake for half a second or connect your device to USB-C", 10, 160);
+                 epaper.drawString("The LED signal should flash BLUE when it's ready", 10, 210);
                  epaper.fullUpdate();
             }
             default:
@@ -1297,7 +1302,7 @@ void scd_read()
         json_gen_obj_set_float(&jstr, "temperature", tem);
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
-        json_gen_obj_set_int(&jstr, "id", JSON_USERID);
+        //json_gen_obj_set_int(&jstr, "id", JSON_USERID); // Deprecated
         json_gen_obj_set_string(&jstr, "key", API_KEY);
         json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
