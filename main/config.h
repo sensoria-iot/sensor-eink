@@ -1,9 +1,6 @@
 // API CONFIG & General settings
 // Please apply for an API Key in sensoria.cat
-#define API_KEY "7abbcddc-88c4-4bc0-a6ff-7331494f5279"
-//#define API_KEY "6f46d584-fb4e-4141-af7a-5033dbd80f07" // FASANI
-// JON d6163c1e-6a0f-430a-9e01-b159b71ec9c3 // Pacific/Honolulu
-// KIM b3b5c965-f420-4686-b8f5-ff8422cd5409 Adam 7abbcddc-88c4-4bc0-a6ff-7331494f5279  TIMEZONE: America/Toronto
+#define API_KEY ""
 
 //#define MESSAGE_SCAN_QR1 "1. Baje el App ESP-Rainmaker"
 //#define MESSAGE_SCAN_QR2 "2. Escanee el QR-CODE"
