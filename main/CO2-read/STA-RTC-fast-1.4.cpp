@@ -549,6 +549,7 @@ void draw_tendencia(int x, int y, int direction) {
  * @param tipo 
  */
 void draw_response_analisis(int tipo) {
+    epaper.fillRect(0, 80, EPD_WIDTH, 300, 0xF);
     epaper.setFont(ubuntu40);
     int gridx1 = 150; int gridx2 = 800;
     int gridy1 = 200; int gridy2 = 450;
@@ -938,12 +939,7 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     int x_offset = EPD_WIDTH -260;
     int y_offset = 90;
     int border = 2;
-    BB_RECT box;
-    box.x = 50;
-    box.y = 50;
-    box.w = 800;
-    box.h = 300;
-    //epaper.fullUpdate(false, false, box);
+
     epaper.fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
     for (int y = -2; y < size + border; y ++) {
         for (int x = -2; x < size + border; x ++) {
@@ -966,6 +962,16 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", API_KEY);
     epaper.drawString(textbuffer, 462, 310);
+
+    textbuffer[0] = '\0';
+    snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
+    epaper.drawString(textbuffer, 462, 360);
+    
+    BB_RECT box;
+    box.x = 50;
+    box.y = 50;
+    box.w = 800;
+    box.h = 360;
     epaper.fullUpdate(false, false, &box);
 }
 
@@ -1015,7 +1021,6 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             case RMAKER_EVENT_WIFI_RESET:
                 ESP_LOGI(TAG, "Wi-Fi credentials reset.");
                 epaper.drawString("Wi-Fi credentials are cleared", 10, 45);
-                epaper.drawString("Will start in WiFi provisioning mode", 10, 100);
                 epaper.fullUpdate();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
@@ -1488,7 +1493,13 @@ void app_main()
     esp_rmaker_start();
 
     /* Uncomment to reset WiFi credentials when there is no Boot button in the ESP32 */
-    //esp_rmaker_wifi_reset(1,10);return;
+    #if (FORCE_WIFI_RESET)
+      esp_rmaker_wifi_reset(1,10);
+      nvs_open("storage", NVS_READWRITE, &nvs_h);
+      nvs_set_i16(nvs_h, "boots", 0);
+      vTaskDelay(pdMS_TO_TICKS(10000));
+      return;
+    #endif
     
     
     /* Start the Wi-Fi/Thread.
