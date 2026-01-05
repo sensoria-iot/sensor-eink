@@ -1179,7 +1179,7 @@ void read_batt_level() {
    if (batt_level > 100) {
     batt_level = 100;
    }
-   // Note: Out batt_level gauge in the display is just 80 pixels so we divide the value *0.8
+   // Note: Our batt_level gauge in the display is just 80 pixels so we divide the value *0.8
 
    int color = 0;
    #if DARKMODE
