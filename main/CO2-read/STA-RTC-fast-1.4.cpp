@@ -453,7 +453,7 @@ void parse_json(const char* json_string)
     }
 
     if (cJSON_IsNumber(sleep_minutes)) {
-        printf("Decoded sleep_minutes: %d\n", sleep_minutes->valueint);
+        //printf("Decoded sleep_minutes: %d\n", sleep_minutes->valueint);
         nvs_minutes_till_refresh = sleep_minutes->valueint;
     }
     if (cJSON_IsString(sensor_tipo)) {
@@ -502,18 +502,32 @@ void parse_json(const char* json_string)
     //aTime.tm_hour = 15; //DEBUG
     //aTime.tm_min = 50; //DEBUG
     
-    // TODO: Check bug with day 1 of each month. Alarm is not being triggered
-    if (rtc_day != aTime.tm_mday && aTime.tm_mday != 1) {
+    rtc.clearAlarms();
+    // For now set this only on DAY 5 of the week
+    if (rtc_day != aTime.tm_mday && cTime.tm_wday == 5) {
+        printf("RTC setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
+        rtc.setTime(&cTime); // Set the current time to the RTC
+ 
+        // Use mktime to normalize and manage transitions
+        time_t raw_time;
+        struct tm normalized_alarm = aTime;
+
+        raw_time = mktime(&normalized_alarm); // Normalize date transitions
+        localtime_r(&raw_time, &normalized_alarm); // Apply normalized date
+
+        rtc.setAlarm(ALARM_DAY, &normalized_alarm); // Set day alarm directly
+        printf("ALARM_DAY: %02d/%02d/%04d %02d:%02d\n", 
+        normalized_alarm.tm_mday, normalized_alarm.tm_mon, 
+        normalized_alarm.tm_year, normalized_alarm.tm_hour, 
+        normalized_alarm.tm_min);
+    } else if (nvs_boots < 10) {
+        printf("RTC INIT setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
         rtc.setTime(&cTime);
-        aTime.tm_mday = aTime.tm_mday-1; // BUG with mday
-        printf("RTC setTime: %02d/%02d/%d %02d:%02d\n", cTime.tm_mday-1, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min);
-        // Has to be ALARM_DAY when changes day
-        rtc.setAlarm(ALARM_DAY, &aTime);
+        rtc.setAlarm(ALARM_TIME, &aTime);
     } else {
-        // Should be ALARM_TIME on same day
-        rtc.setAlarm(ALARM_TIME, &aTime); 
+        rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
     }
-    printf("ALARM: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
 }
 
 /**
@@ -535,6 +549,7 @@ void draw_tendencia(int x, int y, int direction) {
  * @param tipo 
  */
 void draw_response_analisis(int tipo) {
+    epaper.fillRect(0, 80, EPD_WIDTH, 300, 0xF);
     epaper.setFont(ubuntu40);
     int gridx1 = 150; int gridx2 = 800;
     int gridy1 = 200; int gridy2 = 450;
@@ -924,12 +939,7 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     int x_offset = EPD_WIDTH -260;
     int y_offset = 90;
     int border = 2;
-    BB_RECT box;
-    box.x = 50;
-    box.y = 50;
-    box.w = 800;
-    box.h = 300;
-    //epaper.fullUpdate(false, false, box);
+
     epaper.fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
     for (int y = -2; y < size + border; y ++) {
         for (int x = -2; x < size + border; x ++) {
@@ -943,15 +953,25 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     epaper.setFont(ubuntu20);
     char textbuffer[40];
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR1);
-    epaper.drawString(textbuffer, 450, 110);
+    epaper.drawString(textbuffer, 430, 110);
     // Reset textbuffer to empty string:
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
-    epaper.drawString(textbuffer, 450, 160);
+    epaper.drawString(textbuffer, 430, 160);
 
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", API_KEY);
-    epaper.drawString(textbuffer, 458, 310);
+    epaper.drawString(textbuffer, 462, 310);
+
+    textbuffer[0] = '\0';
+    snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
+    epaper.drawString(textbuffer, 462, 360);
+    
+    BB_RECT box;
+    box.x = 50;
+    box.y = 50;
+    box.w = 800;
+    box.h = 360;
     epaper.fullUpdate(false, false, &box);
 }
 
@@ -1001,7 +1021,6 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             case RMAKER_EVENT_WIFI_RESET:
                 ESP_LOGI(TAG, "Wi-Fi credentials reset.");
                 epaper.drawString("Wi-Fi credentials are cleared", 10, 45);
-                epaper.drawString("Will start in WiFi provisioning mode", 10, 100);
                 epaper.fullUpdate();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
@@ -1037,7 +1056,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0xF);
                  epaper.drawString("Provisioning timed-out.", 10, 110);
-                 epaper.drawString("Please reset the device!", 10, 160);
+                 epaper.drawString("Press wake for half a second or connect your device to USB-C", 10, 160);
+                 epaper.drawString("The LED signal should flash BLUE when it's ready", 10, 210);
                  epaper.fullUpdate();
             }
             default:
@@ -1287,7 +1307,7 @@ void scd_read()
         json_gen_obj_set_float(&jstr, "temperature", tem);
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
-        json_gen_obj_set_int(&jstr, "id", JSON_USERID);
+        //json_gen_obj_set_int(&jstr, "id", JSON_USERID); // Deprecated
         json_gen_obj_set_string(&jstr, "key", API_KEY);
         json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
@@ -1410,8 +1430,7 @@ void app_main()
         } */
     } else {
 
-    // RTC Clear current alarms and get time
-    rtc.clearAlarms();
+    // RTC get time
     rtc.getTime(&myTime);
     rtc_day = myTime.tm_mday;
     printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon, myTime.tm_wday);
@@ -1474,7 +1493,13 @@ void app_main()
     esp_rmaker_start();
 
     /* Uncomment to reset WiFi credentials when there is no Boot button in the ESP32 */
-    //esp_rmaker_wifi_reset(1,10);return;
+    #if (FORCE_WIFI_RESET)
+      esp_rmaker_wifi_reset(1,10);
+      nvs_open("storage", NVS_READWRITE, &nvs_h);
+      nvs_set_i16(nvs_h, "boots", 0);
+      vTaskDelay(pdMS_TO_TICKS(10000));
+      return;
+    #endif
     
     
     /* Start the Wi-Fi/Thread.
