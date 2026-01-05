@@ -25,10 +25,11 @@ FASTEPD epaper;
 #include "led_controller.h"
 
 
-#define ADC_VOLTAGE_READ
+//#define ADC_VOLTAGE_READ
 // BQ27426 fuel gauge (For next revision)
-//#include "TiFuelGauge.h"
-//TiFuelGauge TiFuel;
+#include "TiFuelGauge.h"
+TiFuelGauge TiFuel;
+int batt_level = 0;
 
 #ifdef ADC_VOLTAGE_READ
     #include "soc/soc_caps.h"
@@ -1166,20 +1167,19 @@ void epd_print_error(char *message)
 }
 
 void read_batt_level() {
-    batt_level = adc_read_batt();
-   /* if (TiFuel.is_connected()) {
+   if (TiFuel.is_connected()) {
     batt_level = TiFuel.read_state_of_charge();
     printf("voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
-   } */
+   }
 
-   if (batt_level < LOW_BATT_ALERT) {
+   /* if (batt_level < LOW_BATT_ALERT) {
     epaper.setFont(ubuntu_L_30);
     epaper.drawString("< CHARGE", 40, EPD_HEIGHT - 130);
-   }
+   } */
    if (batt_level > 100) {
     batt_level = 100;
    }
-   batt_level = batt_level*0.8;
+   // Note: Our batt_level gauge in the display is just 80 pixels so we divide the value *0.8
 
    int color = 0;
    #if DARKMODE
@@ -1192,12 +1192,7 @@ void read_batt_level() {
    epaper.drawRect(x_offset +1, y_offset - 51, 80, 30, color);
    epaper.drawRect(x_offset +80, y_offset - 41, 10, 12, color);
    epaper.drawRect(x_offset +81, y_offset - 42, 10, 12, color);
-   epaper.fillRect(x_offset +1, y_offset - 49, batt_level-1, 28, 0xA); // bar
-   
-   /* epaper.setFont(ubuntu20); //print %
-   char textbuffer[12];
-   snprintf(textbuffer, sizeof(textbuffer), "%d", batt_level); // %%
-   epaper.drawString(textbuffer, x_offset, y_offset - 20); */
+   epaper.fillRect(x_offset +1, y_offset - 49, (batt_level*0.8)-1, 28, 0xA); // bar
 }
 
 void scd_read()
