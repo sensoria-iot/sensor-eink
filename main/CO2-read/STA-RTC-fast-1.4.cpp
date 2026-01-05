@@ -1179,6 +1179,7 @@ void read_batt_level() {
    if (batt_level > 100) {
     batt_level = 100;
    }
+   // Note: Out batt_level gauge in the display is just 80 pixels so we divide the value *0.8
 
    int color = 0;
    #if DARKMODE
@@ -1191,7 +1192,7 @@ void read_batt_level() {
    epaper.drawRect(x_offset +1, y_offset - 51, 80, 30, color);
    epaper.drawRect(x_offset +80, y_offset - 41, 10, 12, color);
    epaper.drawRect(x_offset +81, y_offset - 42, 10, 12, color);
-   epaper.fillRect(x_offset +1, y_offset - 49, batt_level-1, 28, 0xA); // bar
+   epaper.fillRect(x_offset +1, y_offset - 49, (batt_level*0.8)-1, 28, 0xA); // bar
 }
 
 void scd_read()
