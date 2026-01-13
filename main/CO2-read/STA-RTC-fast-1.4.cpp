@@ -220,6 +220,13 @@ static char *output_buffer; // Buffer to store response of http request from eve
 // Recollected JSON Values
 int res_tipo = 0; // 0=ceo, 1=teams
 int res_confianza = 0;
+// Issue 12:
+const uint8_t color_no_confiable = 0x6;
+int res_confiable_bp_semanal = 1; // Por defecto los valores son TRUE en confiable_*
+int res_confiable_bp_mensual = 1;
+int res_confiable_calidad = 1;
+int res_confiable_prediccion = 1;
+
 int res_bienestar_30 = 0;
 int res_bienestar_7 = 0;
 int res_tendencia_7d = 0;
@@ -414,6 +421,11 @@ void parse_json(const char* json_string)
     cJSON *sleep_minutes = cJSON_GetObjectItem(root, "sleep_minutes");
     cJSON *sensor_tipo = cJSON_GetObjectItem(root, "tipo");
     cJSON *confianza = cJSON_GetObjectItem(root, "confianza");
+    cJSON *confiable_bp_semanal = cJSON_GetObjectItem(root, "confiable_bp_semanal");
+    cJSON *confiable_bp_mensual = cJSON_GetObjectItem(root, "confiable_bp_mensual");
+    cJSON *confiable_prediccion = cJSON_GetObjectItem(root, "confiable_prediccion");
+    cJSON *confiable_calidad = cJSON_GetObjectItem(root, "confiable_calidad");
+
     cJSON *bienestar_30 = cJSON_GetObjectItem(root, "bienestar_30");
     cJSON *bienestar_7 = cJSON_GetObjectItem(root, "bienestar_7");
     cJSON *tendencia_7 = cJSON_GetObjectItem(root, "tendencia_7d");
@@ -465,6 +477,20 @@ void parse_json(const char* json_string)
     if (cJSON_IsNumber(confianza)) {
         res_confianza = confianza->valueint;
     }
+    // Agrega confiable_*
+    if (cJSON_IsNumber(confiable_bp_semanal)) {
+        res_confiable_bp_semanal = confiable_bp_semanal->valueint;
+    }
+    if (cJSON_IsNumber(confiable_bp_mensual)) {
+        res_confiable_bp_mensual = confiable_bp_mensual->valueint;
+    }
+    if (cJSON_IsNumber(confiable_prediccion)) {
+        res_confiable_prediccion = confiable_prediccion->valueint;
+    }
+    if (cJSON_IsNumber(confiable_calidad)) {
+        res_confiable_calidad = confiable_calidad->valueint;
+    }
+
     if (cJSON_IsNumber(bienestar_30)) {
         res_bienestar_7 = bienestar_7->valueint;
     }
@@ -534,13 +560,13 @@ void parse_json(const char* json_string)
 /**
  * @brief Draws tendencia arrows
  */
-void draw_tendencia(int x, int y, int direction) {
+void draw_tendencia(int x, int y, int direction, uint8_t color = 0x0) {
     if (direction > 0) {
-        epaper.loadG5Image(arrow_up, x, y, 0xF, 0x0);
+        epaper.loadG5Image(arrow_up, x, y, 0xF, color);
     } else if (direction < 0) {
-        epaper.loadG5Image(arrow_down, x, y, 0xF, 0x0);
+        epaper.loadG5Image(arrow_down, x, y, 0xF, color);
     } else {
-        epaper.loadG5Image(arrow_neutral, x, y, 0xF, 0x0);
+        epaper.loadG5Image(arrow_neutral, x, y, 0xF, color);
     }
 }
 
@@ -562,9 +588,11 @@ void draw_response_analisis(int tipo) {
     switch (tipo) {
     case 0: {
         /* ceo */
+        epaper.setTextColor((res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d €", res_beneficio_7);
         epaper.drawString(textbuffer, gridx1, gridy1);
         textbuffer[0] = '\0'; // Reset textbuffer to empty string
+        snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_30);
         snprintf(textbuffer, sizeof(textbuffer), "%d €", res_beneficio_30);
         epaper.drawString(textbuffer, gridx2, gridy1);
 
@@ -578,9 +606,11 @@ void draw_response_analisis(int tipo) {
     
     case 1:
         /* teams */
+        epaper.setTextColor((res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_7);
         epaper.drawString(textbuffer, gridx1, gridy1);
         textbuffer[0] = '\0'; // Reset textbuffer to empty string
+        epaper.setTextColor((res_confiable_bp_mensual) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_30);
         epaper.drawString(textbuffer, gridx2, gridy1);
 
@@ -595,30 +625,48 @@ void draw_response_analisis(int tipo) {
     if (ai_data_report) {
         epaper.drawString("MODEL CONFIDENCE", gridx1, gridy2+50);
         textbuffer[0] = '\0';
-        snprintf(textbuffer, sizeof(textbuffer), "NEXT PREDICTED %s ALERT:", res_alert_tipo);
-        epaper.drawString(textbuffer, gridx2, gridy2+50);
-        char * unit_type = "°C";
-        if (strcmp(res_alert_tipo, "CO2") == 0) {
-            unit_type = "ppm";
+        if (res_confiable_prediccion) {
+            snprintf(textbuffer, sizeof(textbuffer), "NEXT PREDICTED %s ALERT:", res_alert_tipo);
+            epaper.drawString(textbuffer, gridx2, gridy2+50);
+            char * unit_type = "°C";
+            if (strcmp(res_alert_tipo, "CO2") == 0) {
+                unit_type = "ppm";
+            }
+            if (strcmp(res_alert_tipo, "HUM") == 0) {
+                unit_type = "%";
+            }
+            textbuffer[0] = '\0';
+            snprintf(textbuffer, sizeof(textbuffer), "%d %s", res_alert_v, unit_type);
+            epaper.drawString(textbuffer, gridx2, gridy2+75);  // Value unit (°C o %)
+        } else {
+            epaper.setTextColor(color_no_confiable-2);
+            snprintf(textbuffer, sizeof(textbuffer), "THE SYSTEM IS STILL LEARNING");
+            epaper.drawString(textbuffer, gridx2, gridy2+50);
+            textbuffer[0] = '\0';
+            snprintf(textbuffer, sizeof(textbuffer), "FROM YOUR DATA");
+            epaper.drawString(textbuffer, gridx2, gridy2+80);
         }
-        if (strcmp(res_alert_tipo, "HUM") == 0) {
-            unit_type = "%";
-        }
-        textbuffer[0] = '\0';
-        snprintf(textbuffer, sizeof(textbuffer), "%d %s", res_alert_v, unit_type);
-        epaper.drawString(textbuffer, gridx2, gridy2+75);  // Value unit (°C o %)
     } else {
         epaper.drawString("REPORT NEEDS 2 DAYS DATA STREAM", gridx2, gridy2+75);
     }
     epaper.drawString(res_message, gridx1, gridy2+75); // message
     
     epaper.setFont(ubuntu40);
-    textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_confianza);
-    epaper.drawString(textbuffer, gridx1, gridy2);
-    textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "%d hrs", res_alert_hrs);
-    epaper.drawString(textbuffer, gridx2, gridy2);
+    if (res_confiable_calidad) {
+        textbuffer[0] = '\0';
+        snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_confianza);
+        epaper.drawString(textbuffer, gridx1, gridy2);
+    }
+    
+    if (res_confiable_prediccion) {
+        epaper.setTextColor(0);
+        textbuffer[0] = '\0';
+        snprintf(textbuffer, sizeof(textbuffer), "%d hrs", res_alert_hrs);
+        epaper.drawString(textbuffer, gridx2, gridy2);
+    } else {
+        epaper.setTextColor(color_no_confiable);
+        epaper.drawString("coming soon", gridx2, gridy2);
+    }
 
     BB_RECT box;
     box.x = 0;
@@ -629,14 +677,15 @@ void draw_response_analisis(int tipo) {
     epaper.fillRect(29, EPD_HEIGHT/2, EPD_WIDTH-30, 1, 0xA);
     epaper.drawLine(EPD_WIDTH/2, box.y, EPD_WIDTH/2, box.h, 0xA);
     // Tendencia top row arrows
-    draw_tendencia(gridx1-100, gridy1-60, res_tendencia_7d);
-    draw_tendencia(gridx2-100, gridy1-60, res_tendencia_30d);
+    draw_tendencia(gridx1-100, gridy1-60, res_tendencia_7d, (res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
+    draw_tendencia(gridx2-100, gridy1-60, res_tendencia_30d, (res_confiable_bp_mensual) ? 0x0 : color_no_confiable);
     // Confidence & next alert
-    epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, 0x0);
-    epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, 0x0);
+    epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, (res_confiable_calidad) ? 0x0 : color_no_confiable);
+    epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, (res_confiable_prediccion) ? 0x0 : color_no_confiable);
 
     // NEXT Alarm
     epaper.setFont(ubuntu12);
+    epaper.setTextColor(0X0);
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d", alarm_day, alarm_hour, alarm_min);
     epaper.drawString(textbuffer, gridx1, 58);
@@ -1167,11 +1216,16 @@ void epd_print_error(char *message)
 }
 
 void read_batt_level() {
+#ifdef ADC_VOLTAGE_READ
+    batt_level = adc_read_batt();
+    printf("ADC BATT batt_level:%d %%\n\n", batt_level);
+#else
    if (TiFuel.is_connected()) {
+    TiFuel.set_chemistry_profile(TI_CHEM_ID_4_2V);
     batt_level = TiFuel.read_state_of_charge();
-    printf("voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
+    printf("TI BATT voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
    }
-
+#endif
    /* if (batt_level < LOW_BATT_ALERT) {
     epaper.setFont(ubuntu_L_30);
     epaper.drawString("< CHARGE", 40, EPD_HEIGHT - 130);
@@ -1419,7 +1473,7 @@ void app_main()
     struct tm myTime;
     int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO); // Do not init, already done. CONFIG_SDA_GPIO, CONFIG_SCL_GPIO
     if (rc != RTC_SUCCESS) {
-        printf("Error initializing the RTC; stopping...\n");
+        printf("Error in rtc.init() I2C is already initialized\n");
         /* while (1) {
             vTaskDelay(1);
         } */
