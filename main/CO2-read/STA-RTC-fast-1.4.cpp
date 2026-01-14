@@ -605,11 +605,11 @@ void draw_response_analisis(int tipo) {
     
     case 1:
         /* teams */
-        epaper.setTextColor((res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
+        epaper.setTextColor((res_confiable_bp_semanal && res_bienestar_7 > 0) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_7);
         epaper.drawString(textbuffer, gridx1, gridy1);
         textbuffer[0] = '\0'; // Reset textbuffer to empty string
-        epaper.setTextColor((res_confiable_bp_mensual) ? 0x0 : color_no_confiable);
+        epaper.setTextColor((res_confiable_bp_mensual && res_bienestar_30 > 0) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_30);
         epaper.drawString(textbuffer, gridx2, gridy1);
 
@@ -663,7 +663,7 @@ void draw_response_analisis(int tipo) {
     epaper.drawString(textbuffer, gridx1, gridy2);
     
     
-    if (res_confiable_prediccion) {
+    if (res_confiable_prediccion && res_alert_hrs > 0) {
         epaper.setTextColor(0);
         textbuffer[0] = '\0';
         snprintf(textbuffer, sizeof(textbuffer), "%d hrs", res_alert_hrs);
@@ -682,11 +682,11 @@ void draw_response_analisis(int tipo) {
     epaper.fillRect(29, EPD_HEIGHT/2, EPD_WIDTH-30, 1, 0xA);
     epaper.drawLine(EPD_WIDTH/2, box.y, EPD_WIDTH/2, box.h, 0xA);
     // Tendencia top row arrows
-    draw_tendencia(gridx1-100, gridy1-60, res_tendencia_7d, (res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
-    draw_tendencia(gridx2-100, gridy1-60, res_tendencia_30d, (res_confiable_bp_mensual) ? 0x0 : color_no_confiable);
+    draw_tendencia(gridx1-100, gridy1-60, res_tendencia_7d, (res_confiable_bp_semanal && res_bienestar_7 > 0) ? 0x0 : color_no_confiable);
+    draw_tendencia(gridx2-100, gridy1-60, res_tendencia_30d, (res_confiable_bp_mensual && res_bienestar_30 > 0) ? 0x0 : color_no_confiable);
     // Confidence & next alert
     epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, (res_confianza>50) ? 0x0 : color_no_confiable);
-    epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, (res_confiable_prediccion) ? 0x0 : color_no_confiable);
+    epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, (res_confiable_prediccion && res_alert_hrs > 0) ? 0x0 : color_no_confiable);
 
     // NEXT Alarm
     epaper.setFont(ubuntu12);
