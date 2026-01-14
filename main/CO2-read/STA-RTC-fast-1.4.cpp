@@ -530,7 +530,7 @@ void parse_json(const char* json_string)
     
     rtc.clearAlarms();
     // For now set this only on DAY 5 of the week
-    if (rtc_day != aTime.tm_mday && cTime.tm_wday == 5) {
+    if (rtc_day != aTime.tm_mday) {
         printf("RTC setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
         rtc.setTime(&cTime); // Set the current time to the RTC
  
