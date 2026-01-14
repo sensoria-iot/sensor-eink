@@ -43,7 +43,6 @@ int batt_level = 0;
     adc_oneshot_unit_handle_t adc1_handle;
     adc_cali_handle_t adc1_cali_chan0_handle = NULL;
     bool do_calibration1_chan0 = false;
-    int batt_level = 100;
 
     int adc_read_batt() {
         int batt = 0;
@@ -1329,6 +1328,8 @@ void scd_read()
     else
     {
         scd4x_stop_periodic_measurement();
+
+        read_batt_level();
         tem = (float)temperature / 1000;
         tem = roundf(tem * 10) / 10;
         float hum = (float)humidity / 1000;
@@ -1348,7 +1349,6 @@ void scd_read()
         cursor_x = EPD_WIDTH - 300;
         scd_render_h(hum, cursor_x, cursor_y);
 
-        read_batt_level();
         // IP address.
         esp_netif_ip_info_t ip_info;
         esp_netif_get_ip_info(esp_netif_get_default_netif(), &ip_info);
@@ -1484,12 +1484,12 @@ void app_main()
             vTaskDelay(1);
         } */
     } else {
-
-    // RTC get time
-    rtc.getTime(&myTime);
-    rtc_day = myTime.tm_mday;
-    printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon, myTime.tm_wday);
+        // RTC get time
+        rtc.getTime(&myTime);
+        rtc_day = myTime.tm_mday;
+        printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon, myTime.tm_wday);
     }
+    
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
     app_network_init();
 
@@ -1551,7 +1551,8 @@ void app_main()
     #if (FORCE_WIFI_RESET)
       esp_rmaker_wifi_reset(1,10);
       nvs_open("storage", NVS_READWRITE, &nvs_h);
-      nvs_set_i16(nvs_h, "boots", 0);
+        nvs_set_i16(nvs_h, "boots", 0);
+        nvs_close(nvs_h);
       vTaskDelay(pdMS_TO_TICKS(10000));
       return;
     #endif
