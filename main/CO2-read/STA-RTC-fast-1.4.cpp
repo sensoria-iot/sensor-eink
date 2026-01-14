@@ -623,6 +623,12 @@ void draw_response_analisis(int tipo) {
     }
     // Same for both
     if (ai_data_report) {
+        if (res_confiable_bp_semanal == 0) {
+                epaper.drawString(not_trustworthy, gridx1, gridy1+90);
+            }
+            if (res_confiable_bp_mensual == 0) {
+                epaper.drawString(not_trustworthy, gridx2, gridy1+90);
+            }
         epaper.drawString("MODEL CONFIDENCE", gridx1, gridy2+50);
         textbuffer[0] = '\0';
         if (res_confiable_prediccion) {
@@ -652,11 +658,11 @@ void draw_response_analisis(int tipo) {
     epaper.drawString(res_message, gridx1, gridy2+75); // message
     
     epaper.setFont(ubuntu40);
-    if (res_confiable_calidad) {
-        textbuffer[0] = '\0';
-        snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_confianza);
-        epaper.drawString(textbuffer, gridx1, gridy2);
-    }
+    epaper.setTextColor((res_confianza>50) ? 0 : color_no_confiable);
+    textbuffer[0] = '\0';
+    snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_confianza);
+    epaper.drawString(textbuffer, gridx1, gridy2);
+    
     
     if (res_confiable_prediccion) {
         epaper.setTextColor(0);
@@ -680,7 +686,7 @@ void draw_response_analisis(int tipo) {
     draw_tendencia(gridx1-100, gridy1-60, res_tendencia_7d, (res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
     draw_tendencia(gridx2-100, gridy1-60, res_tendencia_30d, (res_confiable_bp_mensual) ? 0x0 : color_no_confiable);
     // Confidence & next alert
-    epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, (res_confiable_calidad) ? 0x0 : color_no_confiable);
+    epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, (res_confianza>50) ? 0x0 : color_no_confiable);
     epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, (res_confiable_prediccion) ? 0x0 : color_no_confiable);
 
     // NEXT Alarm
