@@ -1,7 +1,6 @@
 // API CONFIG & General settings
 // Please apply for an API Key in sensoria.cat
-#define API_KEY "6f46d584-*"
-
+#define API_KEY ""
 //#define MESSAGE_SCAN_QR1 "1. Baje el App ESP-Rainmaker"
 //#define MESSAGE_SCAN_QR2 "2. Escanee el QR-CODE"
 #define MESSAGE_SCAN_QR1 "1 Download ESP-Rainmaker app"
@@ -14,6 +13,8 @@
 #define WEB_HOST "sensoria.cat" // dev.
 
 #define API_URL  "http://" WEB_HOST "/api/scd40/log"
+
+const char * not_trustworthy = "NOT TRUSTWORTHY";
 
 // DISPLAY
 #define EPD_WIDTH  1280
