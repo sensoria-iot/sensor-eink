@@ -3,7 +3,6 @@
 #include "driver/i2c.h"
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
-#define RV3032_INT_PIN    2
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -541,7 +540,8 @@ void parse_json(const char* json_string)
         raw_time = mktime(&normalized_alarm); // Normalize date transitions
         localtime_r(&raw_time, &normalized_alarm); // Apply normalized date
 
-        rtc.setAlarm(ALARM_DAY, &normalized_alarm); // Set day alarm directly
+        //rtc.setAlarm(ALARM_DAY, &normalized_alarm); // Set day alarm directly
+        rtc.setAlarm(ALARM_TIME, &normalized_alarm); // No more ALARM_DAY let's use always only time alarm in RV3032
         printf("ALARM_DAY: %02d/%02d/%04d %02d:%02d\n", 
         normalized_alarm.tm_mday, normalized_alarm.tm_mon, 
         normalized_alarm.tm_year, normalized_alarm.tm_hour, 
