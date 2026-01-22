@@ -232,7 +232,7 @@ int res_tendencia_30d = 0;
 int res_beneficio_30 = 0;
 int res_beneficio_7 = 0;
 int res_alert_hrs = 0;
-char res_alert_tipo[9];
+char res_alert_tipo[10];
 int res_alert_v = 0;
 char res_message[40];
 
@@ -551,6 +551,9 @@ void parse_json(const char* json_string)
         rtc.setTime(&cTime);
         rtc.setAlarm(ALARM_TIME, &aTime);
     } else {
+        // Debug to wake-up every 2 mins:
+        //aTime.tm_hour = cTime.tm_hour;
+        //aTime.tm_min = cTime.tm_min +4;
         rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
     }
     printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
@@ -631,18 +634,23 @@ void draw_response_analisis(int tipo) {
         epaper.drawString("MODEL CONFIDENCE", gridx1, gridy2+50);
         textbuffer[0] = '\0';
         if (res_confiable_prediccion) {
-            snprintf(textbuffer, sizeof(textbuffer), "NEXT PREDICTED %s ALERT:", res_alert_tipo);
-            epaper.drawString(textbuffer, gridx2, gridy2+50);
-            char * unit_type = "°C";
-            if (strcmp(res_alert_tipo, "CO2") == 0) {
-                unit_type = "ppm";
+            if (strcmp(res_alert_tipo, "NON") == 0) {
+                snprintf(textbuffer, sizeof(textbuffer), "NO MORE ALERTS TODAY");
+                epaper.drawString(textbuffer, gridx2, gridy2+50);
+            }  else {
+                snprintf(textbuffer, sizeof(textbuffer), "NEXT PREDICTED %s ALERT:", res_alert_tipo);
+                epaper.drawString(textbuffer, gridx2, gridy2+50);
+                char * unit_type = "°C";
+                if (strcmp(res_alert_tipo, "CO2") == 0) {
+                    unit_type = "ppm";
+                }
+                if (strcmp(res_alert_tipo, "HUM") == 0) {
+                    unit_type = "%";
+                }
+                textbuffer[0] = '\0';
+                snprintf(textbuffer, sizeof(textbuffer), "%d %s", res_alert_v, unit_type);
+                epaper.drawString(textbuffer, gridx2, gridy2+75);  // Value unit (°C o %)
             }
-            if (strcmp(res_alert_tipo, "HUM") == 0) {
-                unit_type = "%";
-            }
-            textbuffer[0] = '\0';
-            snprintf(textbuffer, sizeof(textbuffer), "%d %s", res_alert_v, unit_type);
-            epaper.drawString(textbuffer, gridx2, gridy2+75);  // Value unit (°C o %)
         } else {
             epaper.setTextColor(color_no_confiable-2);
             snprintf(textbuffer, sizeof(textbuffer), "THE SYSTEM IS STILL LEARNING");
