@@ -3,6 +3,7 @@
 #include "driver/i2c.h"
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
+float firmware_version = 1.44;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -170,6 +171,9 @@ float tem = 0;
 // Values that will be stored in NVS - defaults here
 nvs_handle_t nvs_h;
 uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
+// SENSOR ID (old API_KEY)
+char * nvs_sensor_id;
+const unsigned int sensor_id_size = 37;
 // General libs
 #include <stdio.h>
 #include <string.h>
@@ -849,7 +853,7 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     epaper.drawString(textbuffer, 430, 160);
 
     textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "%s", SENSOR_ID);
+    snprintf(textbuffer, sizeof(textbuffer), "%s", nvs_sensor_id);
     epaper.drawString(textbuffer, 462, 310);
 
     textbuffer[0] = '\0';
@@ -1196,7 +1200,7 @@ void scd_read()
         json_gen_obj_set_float(&jstr, "temperature", tem);
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
-        json_gen_obj_set_string(&jstr, "key", SENSOR_ID);
+        json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
         json_gen_obj_set_int(&jstr, "batt_level", batt_level);
@@ -1227,7 +1231,7 @@ void app_main()
     led_strip_handle_t led_strip = led_configure();
     ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
 
-    printf("RTC version 1.4\n");
+    printf("RTC OTA version %f.2\n", firmware_version);
 
     #ifdef ADC_VOLTAGE_READ
 //-------------ADC1 Init---------------//
@@ -1298,11 +1302,19 @@ void app_main()
         ESP_LOGE(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
     }
     // Read stored
+    nvs_get_str(nvs_h, "sensor_id", nvs_sensor_id, (size_t*) sensor_id_size);
     nvs_get_i16(nvs_h, "boots", &nvs_boots);
     ESP_LOGI(TAG, "-> NVS Boot count: %d", nvs_boots);
     nvs_boots++;
     // Set new value
     nvs_set_i16(nvs_h, "boots", nvs_boots);
+    if (strcmp(nvs_sensor_id, SENSOR_ID) == 0) {
+        printf("sensor_id matches NVS\n");
+    } else {
+        nvs_set_str(nvs_h, "sensor_id", SENSOR_ID);
+        strcpy(nvs_sensor_id, SENSOR_ID);
+    }
+    nvs_commit(nvs_h);
     nvs_close(nvs_h);
 
     // We read sensor here
