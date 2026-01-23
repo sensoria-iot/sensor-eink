@@ -746,226 +746,52 @@ static void schedule_rtc_wakeup_minutes(int minutes)
            minutes, alarm.tm_mday, alarm.tm_mon + 1, alarm.tm_year + 1900, alarm.tm_hour, alarm.tm_min);
 }
 
-// --- replacement for send_data_to_api() ---
-// Behavior:
-//  - try open/write/fetch_headers/read (so we can skip body for 5xx)
-//  - 1 automatic retry with longer timeout if fetch_headers fails
-//  - fallback to esp_http_client_perform if header-fetching path fails completely
+// Coming back to 1.2 here since it was logging 2 times
 void send_data_to_api()
 {
-    char *local_response_buffer = (char*)heap_caps_malloc(MAX_HTTP_OUTPUT_BUFFER + 1, MALLOC_CAP_SPIRAM);
-    if (!local_response_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate response buffer");
-        // Show friendly UI and schedule retry — keep behavior consistent
-        snprintf(res_message, sizeof(res_message), "Cloud data not available");
-        epaper.setFont(ubuntu30);
-        epaper.fillRect(1, 80, EPD_WIDTH, 400, 0xF);
-        epaper.setFont(ubuntu40);
-        epaper.drawString("Cloud data not available", 40, EPD_HEIGHT/2 - 20);
-        epaper.setFont(ubuntu20);
-        epaper.drawString("Will retry in 30 minutes", 40, EPD_HEIGHT/2 + 40);
-        epaper.fullUpdate(true, false);
-        vTaskDelay(pdMS_TO_TICKS(300));
-        schedule_rtc_wakeup_minutes(30);
-        deep_sleep();
-        return;
+    // Declare local_response_buffer with size (MAX_HTTP_OUTPUT_BUFFER + 1) to prevent out of bound access when
+    // it is used by functions like strlen(). The buffer should only be used upto size MAX_HTTP_OUTPUT_BUFFER
+    char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
+    /**
+     * NOTE: All the configuration parameters for http_client must be spefied either in URL or as host and path parameters.
+     * If host and path parameters are not set, query parameter will be ignored. In such cases,
+     * query parameter should be specified in URL.
+     *
+     * If URL as well as host and path parameters are specified, values of host and path will be considered.
+     */
+    esp_http_client_config_t config = {
+        .url = API_URL,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 3000,
+        .event_handler = _http_event_handler,
+        .user_data = local_response_buffer, // Pass address of local buffer to get response
+    };
+
+    printf("DATA: %s \nURL: %s\n", result.buf, API_URL);
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, result.buf, strlen(result.buf));
+    esp_err_t err = ESP_OK;
+
+    err = esp_http_client_perform(client);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "HTTP POST Status = %d", esp_http_client_get_status_code(client));
     }
-    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
-
-    size_t post_len = strlen(result.buf);
-
-    // Try fetch-headers/read approach with two attempts (normal, then longer timeout)
-    int timeouts_ms[2] = {10000, 20000};
-    bool headers_ok = false;
-    esp_http_client_handle_t client = NULL;
-    esp_err_t err = ESP_FAIL;
-    int status = 0;
-    int64_t content_length = 0;
-
-    for (int attempt = 0; attempt < 2 && !headers_ok; ++attempt) {
-        esp_http_client_config_t config = {
-            .url = API_URL,
-            .method = HTTP_METHOD_POST,
-            .timeout_ms = timeouts_ms[attempt],
-            .event_handler = NULL, // manual read
-            .user_data = NULL,
-        };
-
-        client = esp_http_client_init(&config);
-        if (!client) {
-            ESP_LOGE(TAG, "http client init failed on attempt %d", attempt+1);
-            continue;
-        }
-
-        // Important headers for manual write/read flow
-        esp_http_client_set_header(client, "Content-Type", "application/json");
-        esp_http_client_set_header(client, "Connection", "close");
-        char clen[20];
-        snprintf(clen, sizeof(clen), "%u", (unsigned)post_len);
-        esp_http_client_set_header(client, "Content-Length", clen);
-
-        err = esp_http_client_open(client, post_len);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "http open failed (attempt %d): %s (0x%x)", attempt+1, esp_err_to_name(err), err);
-            esp_http_client_cleanup(client);
-            client = NULL;
-            continue;
-        }
-
-        int wrote = esp_http_client_write(client, result.buf, post_len);
-        if (wrote < 0 || (size_t)wrote != post_len) {
-            ESP_LOGW(TAG, "http write failed (attempt %d): wrote=%d expected=%u", attempt+1, wrote, (unsigned)post_len);
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
-            client = NULL;
-            continue;
-        }
-
-        // fetch headers (blocks until headers or timeout)
-        err = esp_http_client_fetch_headers(client);
-        if (err == ESP_OK) {
-            headers_ok = true;
-            status = esp_http_client_get_status_code(client);
-            content_length = esp_http_client_get_content_length(client);
-            ESP_LOGI(TAG, "fetch headers succeeded (attempt %d) status=%d content_length=%" PRId64, attempt+1, status, content_length);
-            break;
-        } else {
-            ESP_LOGW(TAG, "fetch headers returned: %s (0x%x) attempt=%d", esp_err_to_name(err), err, attempt+1);
-            // cleanup and try again with longer timeout
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
-            client = NULL;
-            continue;
-        }
-    } // end attempts
-
-    // If headers could not be fetched with the manual approach, fallback to perform (safe)
-    if (!headers_ok) {
-        ESP_LOGW(TAG, "Headers not fetched after retries - falling back to esp_http_client_perform()");
-        // Prepare a client that uses the event handler to fill local_response_buffer
-        esp_http_client_config_t cfg2 = {
-            .url = API_URL,
-            .method = HTTP_METHOD_POST,
-            .timeout_ms = 15000,
-            .event_handler = _http_event_handler,
-            .user_data = local_response_buffer,
-        };
-        esp_http_client_handle_t client2 = esp_http_client_init(&cfg2);
-        if (!client2) {
-            ESP_LOGE(TAG, "Fallback client init failed");
-            heap_caps_free(local_response_buffer);
-            snprintf(res_message, sizeof(res_message), "Cloud data not available");
-            schedule_rtc_wakeup_minutes(30);
-            deep_sleep();
-            return;
-        }
-        esp_http_client_set_header(client2, "Content-Type", "application/json");
-        esp_http_client_set_post_field(client2, result.buf, post_len);
-
-        esp_err_t perr = esp_http_client_perform(client2);
-        if (perr != ESP_OK) {
-            ESP_LOGE(TAG, "Fallback HTTP POST failed: %s", esp_err_to_name(perr));
-            // Show friendly message and schedule retry
-            snprintf(res_message, sizeof(res_message), "Cloud data not available");
-            epaper.setFont(ubuntu30);
-            epaper.fillRect(1, 80, EPD_WIDTH, 400, 0xF); // clear area
-            epaper.setFont(ubuntu40);
-            epaper.drawString("Cloud data not available", 40, EPD_HEIGHT/2 - 20);
-            epaper.setFont(ubuntu20);
-            epaper.drawString("Will retry in 30 minutes", 40, EPD_HEIGHT/2 + 40);
-            epaper.fullUpdate(true, false);
-            vTaskDelay(pdMS_TO_TICKS(300));
-
-            esp_http_client_cleanup(client2);
-            heap_caps_free(local_response_buffer);
-            schedule_rtc_wakeup_minutes(30);
-            return;
-        }
-
-        // parse whatever we got in the buffer
-        ESP_LOG_BUFFER_CHAR(TAG, local_response_buffer, strlen(local_response_buffer));
-        parse_json(local_response_buffer);
-        draw_response_analisis(res_tipo);
-        esp_http_client_cleanup(client2);
-        heap_caps_free(local_response_buffer);
-        return;
-    }
-
-    // If we have headers and a status:
-    if (status >= 500) {
-        led_blink_start(50, 0, 0, 500); // RED
-        ESP_LOGW(TAG, "Server returned %d - skipping body download", status);
-        // Friendly message on display and schedule retry
-        snprintf(res_message, sizeof(res_message), "Cloud data not available");
-        epaper.setFont(ubuntu30);
-        epaper.fillRect(1, 80, EPD_WIDTH, 400, 0xF); // clear area
-        epaper.setFont(ubuntu40);
-        epaper.drawString("Cloud data not available", 40, EPD_HEIGHT/2 - 20);
-        epaper.setFont(ubuntu20);
-        epaper.drawString("Will retry in 30 minutes", 40, EPD_HEIGHT/2 + 40);
-        epaper.fullUpdate(true, false);
-        vTaskDelay(pdMS_TO_TICKS(300));
-
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        heap_caps_free(local_response_buffer);
-
-        schedule_rtc_wakeup_minutes(30);
-        return; // app_main will deep_sleep()
-    }
-
-    // Otherwise read the body explicitly (bounded)
-    int total_read = 0;
-    while (total_read < MAX_HTTP_OUTPUT_BUFFER) {
-        int to_read = MAX_HTTP_OUTPUT_BUFFER - total_read;
-        int r = esp_http_client_read(client, local_response_buffer + total_read, to_read);
-        if (r > 0) {
-            total_read += r;
-            // If content_length known, stop once we've read it
-            if (content_length > 0 && total_read >= content_length) break;
-        } else if (r == 0) {
-            // connection closed
-            break;
-        } else {
-            ESP_LOGW(TAG, "http read error: %d", r);
-            break;
-        }
-    }
-
-    // Null-terminate
-    if (total_read < MAX_HTTP_OUTPUT_BUFFER) local_response_buffer[total_read] = '\0';
-    else local_response_buffer[MAX_HTTP_OUTPUT_BUFFER] = '\0';
-
-    if (total_read == 0) {
-        led_blink_start(50, 0, 0, 500); // RED
-        ESP_LOGW(TAG, "Empty response body");
-        // friendly fallback
-        snprintf(res_message, sizeof(res_message), "Cloud data not available");
-        epaper.setFont(ubuntu30);
-        epaper.fillRect(1, 80, EPD_WIDTH, 400, 0xF);
-        epaper.setFont(ubuntu40);
-        epaper.drawString("Cloud data not available", 40, EPD_HEIGHT/2 - 20);
-        epaper.setFont(ubuntu20);
-        epaper.drawString("Will retry in 30 minutes", 40, EPD_HEIGHT/2 + 40);
-        epaper.fullUpdate(true, false);
-        vTaskDelay(pdMS_TO_TICKS(300));
-
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        heap_caps_free(local_response_buffer);
-        schedule_rtc_wakeup_minutes(30);
-        return;
+    else
+    {
+        ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
     }
 
     // Got a body - parse and draw
-    ESP_LOGI(TAG, "Response body (%d bytes): %s", total_read, local_response_buffer);
+    //ESP_LOG_BUFFER_CHAR(TAG, local_response_buffer, strlen(local_response_buffer));
     parse_json(local_response_buffer);
     draw_response_analisis(res_tipo);
 
     // Clean up
-    esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    heap_caps_free(local_response_buffer);
+
 }
 
 static void flush_str(char *buf, void *priv)
