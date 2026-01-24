@@ -10,7 +10,7 @@
 #define JSON_TIMEZONE "Europe/Madrid"
 
 #define WEB_PORT "80"
-#define WEB_HOST "dev.sensoria.cat" // dev.
+#define WEB_HOST "sensoria.cat" // dev.
 
 #define API_URL  "http://" WEB_HOST "/api/scd40/log"
 
