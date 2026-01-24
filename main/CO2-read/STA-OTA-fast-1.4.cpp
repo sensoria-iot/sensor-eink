@@ -1,6 +1,11 @@
 // Edit your API setup and general configuration options:
 #include "../config.h"
 #include "driver/i2c.h"
+
+// SENSOR ID (old API_KEY)
+char * nvs_sensor_id;
+size_t sensor_id_size;
+
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
 float firmware_version = 1.44;
@@ -171,9 +176,7 @@ float tem = 0;
 // Values that will be stored in NVS - defaults here
 nvs_handle_t nvs_h;
 uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
-// SENSOR ID (old API_KEY)
-char * nvs_sensor_id;
-const unsigned int sensor_id_size = 37;
+
 // General libs
 #include <stdio.h>
 #include <string.h>
@@ -1231,7 +1234,7 @@ void app_main()
     led_strip_handle_t led_strip = led_configure();
     ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
 
-    printf("RTC OTA version %f.2\n", firmware_version);
+    printf("RTC OTA version %.2f\n", firmware_version);
 
     #ifdef ADC_VOLTAGE_READ
 //-------------ADC1 Init---------------//
@@ -1301,15 +1304,20 @@ void app_main()
     {
         ESP_LOGE(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
     }
-    // Read stored
-    nvs_get_str(nvs_h, "sensor_id", nvs_sensor_id, (size_t*) sensor_id_size);
+    // Read stored SENSOR_ID
+    nvs_get_str(nvs_h, "sensor_id", NULL, &sensor_id_size);
+    nvs_sensor_id = (char*)malloc(sensor_id_size);
+    nvs_get_str(nvs_h, "sensor_id", nvs_sensor_id, &sensor_id_size);
+
     nvs_get_i16(nvs_h, "boots", &nvs_boots);
     ESP_LOGI(TAG, "-> NVS Boot count: %d", nvs_boots);
     nvs_boots++;
     // Set new value
     nvs_set_i16(nvs_h, "boots", nvs_boots);
     if (strcmp(nvs_sensor_id, SENSOR_ID) == 0) {
-        printf("sensor_id matches NVS\n");
+        printf("SENSOR_ID matches NVS\n");
+    } else if (strcmp(SENSOR_ID, "") == 0) {
+        printf("SENSOR_ID is empty reading it from NVS\n");
     } else {
         nvs_set_str(nvs_h, "sensor_id", SENSOR_ID);
         strcpy(nvs_sensor_id, SENSOR_ID);
