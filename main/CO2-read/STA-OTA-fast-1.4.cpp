@@ -1,13 +1,14 @@
 // Edit your API setup and general configuration options:
 #include "../config.h"
 #include "driver/i2c.h"
-
+#include "esp_mac.h"
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
-
+// IO Definitions
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
+#define BUTTON1           GPIO_NUM_46
 float firmware_version = 1.44;
 
 // Declare ASCII names for each of the supported RTC types
@@ -165,7 +166,10 @@ static const char *TAG = "CO2_ST";
 
 bool ready_to_measure = false;
 bool measure_taken = false;
+
+uint16_t co2 = 0;
 float tem = 0;
+float hum = 0;
 
 #define DEVICE_PARAM_WIFI_RESET "Turn slider to 100 to reset WiFi"
 #define LOW_BATT_ALERT 20
@@ -250,11 +254,8 @@ char res_message[40];
 
 // Flag to know that how many times the device booted
 int16_t nvs_boots = 0;
-
-#define BUTTON1 GPIO_NUM_46
-#define BUTTON2 GPIO_NUM_38
-bool button1_wakeup = false;
-bool button2_wakeup = false;
+// Define the global MAC address variable
+char* mac_string;
 
 // EPD framebuffer
 uint8_t *fb;
@@ -272,6 +273,47 @@ void deep_sleep()
     gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 0);
     ESP_LOGI(pcTaskGetName(0), "DEEP_SLEEP_MINUTES: %d mins to wake-up", nvs_minutes_till_refresh);
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
+}
+
+/**
+ * @brief Fetch and return the Microchip MAC address as a formatted string.
+ * 
+ * This function retrieves the base MAC address from EFUSE and formats it
+ * as a hexadecimal string for use in JSON or other text-based protocols.
+ * 
+ * @return A dynamically allocated C-string with the formatted MAC address in the format "xx:xx:xx:xx:xx:xx".
+ *         Caller is responsible for freeing the memory.
+ */
+char* getFormattedMacAddress()
+{
+    uint8_t base_mac_addr[6] = {0};
+    esp_err_t ret = esp_read_mac(base_mac_addr, ESP_MAC_EFUSE_FACTORY);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to read base MAC address (error: %s)", esp_err_to_name(ret));
+        return nullptr;
+    }
+
+    ESP_LOGI(TAG, "Base MAC Address fetched successfully: 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x",
+             base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
+             base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
+
+    // Allocate memory for the formatted MAC address string
+    // Example: "aa:bb:cc:dd:ee:ff" (17 characters + null terminator)
+    char* mac_string = (char*) malloc(18 * sizeof(char));
+    if (!mac_string)
+    {
+        ESP_LOGE(TAG, "Failed to allocate memory for MAC address string");
+        return nullptr;
+    }
+
+    // Format the MAC address as a string
+    sprintf(mac_string, "%02x:%02x:%02x:%02x:%02x:%02x",
+            base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
+            base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
+
+    ESP_LOGI(TAG, "Formatted MAC Address: %s", mac_string);
+    return mac_string;
 }
 
 // Event handler for HTTP requests
@@ -1154,7 +1196,6 @@ void scd_read()
         ESP_LOGE(TAG, "SCD4x ready flag is not coming in time");
     }
 
-    uint16_t co2;
     int32_t temperature;
     int32_t humidity;
     error = scd4x_read_measurement(&co2, &temperature, &humidity);
@@ -1173,7 +1214,7 @@ void scd_read()
         read_batt_level();
         tem = (float)temperature / 1000;
         tem = roundf(tem * 10) / 10;
-        float hum = (float)humidity / 1000;
+        hum = (float)humidity / 1000;
         hum = roundf(hum * 10) / 10;
         ESP_LOGI(TAG, "CO2 : %u", co2);
         ESP_LOGI(TAG, "Temp: %d m°C %.1f 0xFC", (int)temperature, tem);
@@ -1189,12 +1230,24 @@ void scd_read()
 
         cursor_x = EPD_WIDTH - 300;
         scd_render_h(hum, cursor_x, cursor_y);
+        //epaper.loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
+        epaper.fullUpdate(true, false);
+    }
 
-        // IP address.
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGI(TAG, "scd4x_power_down()");
+    scd4x_power_down();
+
+    sensirion_i2c_hal_free();
+}
+
+void build_request_json() {
+    // IP address.
         esp_netif_ip_info_t ip_info;
         esp_netif_get_ip_info(esp_netif_get_default_netif(), &ip_info);
         sprintf(esp_ip, IPSTR, IP2STR(&ip_info.ip));
-
+        // Read MCU MAC
+        mac_string = getFormattedMacAddress();
         memset(&result, 0, sizeof(json_gen_test_result_t));
         json_gen_str_t jstr;
         json_gen_str_start(&jstr, result.buf, sizeof(result.buf), flush_str, &result);
@@ -1206,22 +1259,11 @@ void scd_read()
         json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
+        json_gen_obj_set_string(&jstr, "mac", mac_string);
         json_gen_obj_set_int(&jstr, "batt_level", batt_level);
         json_gen_end_object(&jstr);
         json_gen_end_object(&jstr);
         json_gen_str_end(&jstr);
-        // printf("JSON: %s\n", result.buf);
-        
-
-        //epaper.loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
-        epaper.fullUpdate(true, false);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(300));
-    ESP_LOGI(TAG, "scd4x_power_down()");
-    scd4x_power_down();
-
-    sensirion_i2c_hal_free();
 }
 
 void app_main()
@@ -1428,6 +1470,7 @@ void app_main()
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
+    build_request_json();
     send_data_to_api();
 
     deep_sleep();
