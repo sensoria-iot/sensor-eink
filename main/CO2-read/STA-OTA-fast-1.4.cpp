@@ -830,7 +830,8 @@ void send_data_to_api()
     }
     else
     {
-        ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "HTTP POST request failed: %s. Scheduling additional wake-up", esp_err_to_name(err));
+        schedule_rtc_wakeup_minutes(10);
     }
 
     // Got a body - parse and draw
