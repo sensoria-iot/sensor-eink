@@ -350,7 +350,8 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
         ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
         ESP_LOG_BUFFER_CHAR(TAG, evt->data, evt->data_len);
          if (output_len == 0 && evt->user_data) {
-                // we are just starting to copy the output data into the use
+                // NOTE: This assumes user_data buffer is at least MAX_HTTP_OUTPUT_BUFFER bytes
+                // Clear only what we need for the response
                 memset(evt->user_data, 0, MAX_HTTP_OUTPUT_BUFFER);
             }
             /*
@@ -492,11 +493,14 @@ bool check_firmware_update(char* update_url, size_t url_size)
         return false;
     }
     
+    ESP_LOGI(TAG, "HTTP client initialized, performing request...");
     esp_err_t err = esp_http_client_perform(client);
+    ESP_LOGI(TAG, "HTTP client perform returned: %s", esp_err_to_name(err));
     
     bool update_available = false;
     
     if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Getting status code from client handle: %p", (void*)client);
         int status_code = esp_http_client_get_status_code(client);
         ESP_LOGI(TAG, "Firmware check HTTP Status = %d", status_code);
         
