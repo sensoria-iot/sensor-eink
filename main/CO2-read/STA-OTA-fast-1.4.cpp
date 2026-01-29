@@ -477,7 +477,13 @@ bool check_firmware_update(char* update_url, size_t url_size)
     
     ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
     
-    char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
+    // Allocate response buffer on heap to avoid stack overflow
+    char *local_response_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (local_response_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+        return false;
+    }
+    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
     
     esp_http_client_config_t config = {
         .url = url,
@@ -490,6 +496,7 @@ bool check_firmware_update(char* update_url, size_t url_size)
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         ESP_LOGE(TAG, "Failed to initialize HTTP client");
+        free(local_response_buffer);
         return false;
     }
     
@@ -539,6 +546,7 @@ bool check_firmware_update(char* update_url, size_t url_size)
     }
     
     esp_http_client_cleanup(client);
+    free(local_response_buffer);
     return update_available;
 }
 
