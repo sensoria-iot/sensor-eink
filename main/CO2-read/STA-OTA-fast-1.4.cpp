@@ -567,6 +567,7 @@ esp_err_t perform_ota_update(const char* url)
         .url = url,
         .timeout_ms = 30000,
         .keep_alive_enable = true,
+        .skip_cert_common_name_check = true,  // Allow HTTP without certificate verification
     };
     
     esp_https_ota_config_t ota_https_config = {
