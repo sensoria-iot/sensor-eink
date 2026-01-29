@@ -970,9 +970,15 @@ static void schedule_rtc_wakeup_minutes(int minutes)
 // Coming back to 1.2 here since it was logging 2 times
 void send_data_to_api()
 {
-    // Declare local_response_buffer with size (MAX_HTTP_OUTPUT_BUFFER + 1) to prevent out of bound access when
-    // it is used by functions like strlen(). The buffer should only be used upto size MAX_HTTP_OUTPUT_BUFFER
-    char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
+    // Allocate response buffer on heap to avoid stack overflow
+    // The buffer should only be used up to size MAX_HTTP_OUTPUT_BUFFER
+    char *local_response_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (local_response_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+        return;
+    }
+    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    
     /**
      * NOTE: All the configuration parameters for http_client must be spefied either in URL or as host and path parameters.
      * If host and path parameters are not set, query parameter will be ignored. In such cases,
@@ -1013,6 +1019,7 @@ void send_data_to_api()
 
     // Clean up
     esp_http_client_cleanup(client);
+    free(local_response_buffer);
 
 }
 
