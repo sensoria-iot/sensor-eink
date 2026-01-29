@@ -355,33 +355,27 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
                 ESP_LOGI(TAG, "Clearing user_data buffer");
                 memset(evt->user_data, 0, MAX_HTTP_OUTPUT_BUFFER);
             }
-            /*
-             *  Check for chunked encoding is added as the URL for chunked encoding used in this example returns binary data.
-             *  However, event handler can also be used in case chunked encoding is used.
-             */
-            bool is_chunked = esp_http_client_is_chunked_response(evt->client);
-            ESP_LOGI(TAG, "Is chunked response: %d", is_chunked);
-            if (!is_chunked) {
-                // If user_data buffer is configured, copy the response into the buffer
-                int copy_len = 0;
-                if (evt->user_data) {
-                    // The last byte in evt->user_data is kept for the NULL character in case of out-of-bound access.
-                    copy_len = MIN(evt->data_len, (MAX_HTTP_OUTPUT_BUFFER - output_len));
-                    if (copy_len) {
-                        ESP_LOGI(TAG, "Copying %d bytes to user_data at offset %d", copy_len, output_len);
-                        memcpy(evt->user_data + output_len, evt->data, copy_len);
-                    }
-                } else {
-                    ESP_LOGI(TAG, "No user_data, using global output_buffer");
-                    int content_len = esp_http_client_get_content_length(evt->client);
             
-                    copy_len = MIN(evt->data_len, (content_len - output_len));
-                    if (copy_len) {
-                        memcpy(output_buffer + output_len, evt->data, copy_len);
-                    }
+            // Copy data to buffer (handle both chunked and non-chunked)
+            int copy_len = 0;
+            if (evt->user_data) {
+                // User provided buffer - copy data regardless of chunked encoding
+                copy_len = MIN(evt->data_len, (MAX_HTTP_OUTPUT_BUFFER - output_len));
+                if (copy_len) {
+                    ESP_LOGI(TAG, "Copying %d bytes to user_data at offset %d", copy_len, output_len);
+                    memcpy(evt->user_data + output_len, evt->data, copy_len);
                 }
                 output_len += copy_len;
                 ESP_LOGI(TAG, "Total output_len now: %d", output_len);
+            } else if (!esp_http_client_is_chunked_response(evt->client)) {
+                // Global buffer - only for non-chunked (legacy behavior)
+                ESP_LOGI(TAG, "No user_data, using global output_buffer");
+                int content_len = esp_http_client_get_content_length(evt->client);
+                copy_len = MIN(evt->data_len, (content_len - output_len));
+                if (copy_len) {
+                    memcpy(output_buffer + output_len, evt->data, copy_len);
+                }
+                output_len += copy_len;
             }
 
             break;
