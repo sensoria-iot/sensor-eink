@@ -460,6 +460,152 @@ static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_pa
     return ESP_OK;
 }
 
+/**
+ * @brief Check for firmware updates from the API
+ * 
+ * Makes a GET request to the firmware version endpoint and compares
+ * with the current firmware version.
+ * 
+ * @return true if a newer version is available, false otherwise
+ */
+bool check_firmware_update(char* update_url, size_t url_size)
+{
+    char url[256];
+    snprintf(url, sizeof(url), "http://%s/api/firmware/S3/%s", WEB_HOST, nvs_sensor_id);
+    
+    ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
+    
+    char local_response_buffer[512] = {0};
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 5000,
+        .event_handler = _http_event_handler,
+        .user_data = local_response_buffer,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t err = esp_http_client_perform(client);
+    
+    bool update_available = false;
+    
+    if (err == ESP_OK) {
+        int status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "Firmware check HTTP Status = %d", status_code);
+        
+        if (status_code == 200) {
+            ESP_LOGI(TAG, "Response: %s", local_response_buffer);
+            
+            // Parse JSON response
+            cJSON *root = cJSON_Parse(local_response_buffer);
+            if (root != NULL) {
+                cJSON *version = cJSON_GetObjectItem(root, "version");
+                cJSON *status = cJSON_GetObjectItem(root, "status");
+                cJSON *path = cJSON_GetObjectItem(root, "path");
+                
+                if (cJSON_IsNumber(version) && cJSON_IsString(status) && cJSON_IsString(path)) {
+                    float available_version = version->valuedouble;
+                    
+                    ESP_LOGI(TAG, "Current firmware: %.2f, Available: %.2f", 
+                             firmware_version, available_version);
+                    
+                    if (available_version > firmware_version && 
+                        strcmp(status->valuestring, "OK") == 0) {
+                        // Copy the download URL
+                        snprintf(update_url, url_size, "%s", path->valuestring);
+                        update_available = true;
+                        ESP_LOGI(TAG, "New firmware available! Version %.2f at %s", 
+                                 available_version, update_url);
+                    } else {
+                        ESP_LOGI(TAG, "Firmware is up to date");
+                    }
+                }
+                cJSON_Delete(root);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "Firmware check failed: %s", esp_err_to_name(err));
+    }
+    
+    esp_http_client_cleanup(client);
+    return update_available;
+}
+
+/**
+ * @brief Perform OTA firmware update
+ * 
+ * Downloads and installs the new firmware from the specified URL.
+ * The device will restart automatically after successful update.
+ * 
+ * @param url The URL to download the firmware from
+ * @return ESP_OK on success
+ */
+esp_err_t perform_ota_update(const char* url)
+{
+    ESP_LOGI(TAG, "Starting OTA update from: %s", url);
+    
+    esp_http_client_config_t ota_config = {
+        .url = url,
+        .timeout_ms = 30000,
+        .keep_alive_enable = true,
+    };
+    
+    esp_https_ota_config_t ota_https_config = {
+        .http_config = &ota_config,
+    };
+    
+    esp_err_t ret = esp_https_ota(&ota_https_config);
+    
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA update successful! Restarting...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
+    } else {
+        ESP_LOGE(TAG, "OTA update failed: %s", esp_err_to_name(ret));
+    }
+    
+    return ret;
+}
+
+/**
+ * @brief Check and perform OTA update if available
+ * 
+ * This function should be called once per day when the RTC alarm
+ * indicates a day change has occurred.
+ */
+void check_and_update_firmware()
+{
+    ESP_LOGI(TAG, "Checking for firmware updates (once per day)...");
+    
+    char update_url[256] = {0};
+    
+    if (check_firmware_update(update_url, sizeof(update_url))) {
+        ESP_LOGI(TAG, "Update available, starting download...");
+        
+        // Show update message on display
+        epaper.setFont(ubuntu30);
+        char textbuffer[60];
+        snprintf(textbuffer, sizeof(textbuffer), "Updating firmware...");
+        epaper.drawString(textbuffer, 200, EPD_HEIGHT/2 - 50);
+        epaper.fullUpdate(true, false);
+        
+        // Perform the update
+        esp_err_t ret = perform_ota_update(update_url);
+        
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to perform OTA update");
+            // Show error on display
+            snprintf(textbuffer, sizeof(textbuffer), "Update failed!");
+            epaper.drawString(textbuffer, 200, EPD_HEIGHT/2);
+            epaper.fullUpdate(true, false);
+        }
+        // If successful, device will restart, so we never reach here
+    } else {
+        ESP_LOGI(TAG, "No firmware update available");
+    }
+}
+
 void parse_json(const char* json_string)
 {
     // Parse the JSON string
@@ -801,152 +947,6 @@ static void schedule_rtc_wakeup_minutes(int minutes)
 
     printf("RTC alarm scheduled in %d minutes -> %02d/%02d/%04d %02d:%02d\n",
            minutes, alarm.tm_mday, alarm.tm_mon + 1, alarm.tm_year + 1900, alarm.tm_hour, alarm.tm_min);
-}
-
-/**
- * @brief Check for firmware updates from the API
- * 
- * Makes a GET request to the firmware version endpoint and compares
- * with the current firmware version.
- * 
- * @return true if a newer version is available, false otherwise
- */
-bool check_firmware_update(char* update_url, size_t url_size)
-{
-    char url[256];
-    snprintf(url, sizeof(url), "http://dev.sensoria.cat/api/firmware/S3/%s", nvs_sensor_id);
-    
-    ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
-    
-    char local_response_buffer[512] = {0};
-    
-    esp_http_client_config_t config = {
-        .url = url,
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = 5000,
-        .event_handler = _http_event_handler,
-        .user_data = local_response_buffer,
-    };
-    
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_err_t err = esp_http_client_perform(client);
-    
-    bool update_available = false;
-    
-    if (err == ESP_OK) {
-        int status_code = esp_http_client_get_status_code(client);
-        ESP_LOGI(TAG, "Firmware check HTTP Status = %d", status_code);
-        
-        if (status_code == 200) {
-            ESP_LOGI(TAG, "Response: %s", local_response_buffer);
-            
-            // Parse JSON response
-            cJSON *root = cJSON_Parse(local_response_buffer);
-            if (root != NULL) {
-                cJSON *version = cJSON_GetObjectItem(root, "version");
-                cJSON *status = cJSON_GetObjectItem(root, "status");
-                cJSON *path = cJSON_GetObjectItem(root, "path");
-                
-                if (cJSON_IsNumber(version) && cJSON_IsString(status) && cJSON_IsString(path)) {
-                    float available_version = version->valuedouble;
-                    
-                    ESP_LOGI(TAG, "Current firmware: %.2f, Available: %.2f", 
-                             firmware_version, available_version);
-                    
-                    if (available_version > firmware_version && 
-                        strcmp(status->valuestring, "OK") == 0) {
-                        // Copy the download URL
-                        snprintf(update_url, url_size, "%s", path->valuestring);
-                        update_available = true;
-                        ESP_LOGI(TAG, "New firmware available! Version %.2f at %s", 
-                                 available_version, update_url);
-                    } else {
-                        ESP_LOGI(TAG, "Firmware is up to date");
-                    }
-                }
-                cJSON_Delete(root);
-            }
-        }
-    } else {
-        ESP_LOGE(TAG, "Firmware check failed: %s", esp_err_to_name(err));
-    }
-    
-    esp_http_client_cleanup(client);
-    return update_available;
-}
-
-/**
- * @brief Perform OTA firmware update
- * 
- * Downloads and installs the new firmware from the specified URL.
- * The device will restart automatically after successful update.
- * 
- * @param url The URL to download the firmware from
- * @return ESP_OK on success
- */
-esp_err_t perform_ota_update(const char* url)
-{
-    ESP_LOGI(TAG, "Starting OTA update from: %s", url);
-    
-    esp_http_client_config_t ota_config = {
-        .url = url,
-        .timeout_ms = 30000,
-        .keep_alive_enable = true,
-    };
-    
-    esp_https_ota_config_t ota_https_config = {
-        .http_config = &ota_config,
-    };
-    
-    esp_err_t ret = esp_https_ota(&ota_https_config);
-    
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "OTA update successful! Restarting...");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_restart();
-    } else {
-        ESP_LOGE(TAG, "OTA update failed: %s", esp_err_to_name(ret));
-    }
-    
-    return ret;
-}
-
-/**
- * @brief Check and perform OTA update if available
- * 
- * This function should be called once per day when the RTC alarm
- * indicates a day change has occurred.
- */
-void check_and_update_firmware()
-{
-    ESP_LOGI(TAG, "Checking for firmware updates (once per day)...");
-    
-    char update_url[256] = {0};
-    
-    if (check_firmware_update(update_url, sizeof(update_url))) {
-        ESP_LOGI(TAG, "Update available, starting download...");
-        
-        // Show update message on display
-        epaper.setFont(ubuntu30);
-        char textbuffer[60];
-        snprintf(textbuffer, sizeof(textbuffer), "Updating firmware...");
-        epaper.drawString(textbuffer, 200, EPD_HEIGHT/2 - 50);
-        epaper.fullUpdate(true, false);
-        
-        // Perform the update
-        esp_err_t ret = perform_ota_update(update_url);
-        
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to perform OTA update");
-            // Show error on display
-            snprintf(textbuffer, sizeof(textbuffer), "Update failed!");
-            epaper.drawString(textbuffer, 200, EPD_HEIGHT/2);
-            epaper.fullUpdate(true, false);
-        }
-        // If successful, device will restart, so we never reach here
-    } else {
-        ESP_LOGI(TAG, "No firmware update available");
-    }
 }
 
 // Coming back to 1.2 here since it was logging 2 times
