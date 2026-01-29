@@ -334,6 +334,7 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 
     case HTTP_EVENT_ON_CONNECTED:
         ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
+        output_len = 0;  // Reset for new request
         break;
 
     case HTTP_EVENT_HEADER_SENT:
@@ -475,7 +476,7 @@ bool check_firmware_update(char* update_url, size_t url_size)
     
     ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
     
-    char local_response_buffer[512] = {0};
+    char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
     
     esp_http_client_config_t config = {
         .url = url,
@@ -486,6 +487,11 @@ bool check_firmware_update(char* update_url, size_t url_size)
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize HTTP client");
+        return false;
+    }
+    
     esp_err_t err = esp_http_client_perform(client);
     
     bool update_available = false;
