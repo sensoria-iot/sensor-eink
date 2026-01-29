@@ -913,7 +913,7 @@ void draw_response_analisis(int tipo) {
     epaper.setFont(ubuntu12);
     epaper.setTextColor(0X0);
     textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d", alarm_day, alarm_hour, alarm_min);
+    snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d VER. %.2f", alarm_day, alarm_hour, alarm_min, firmware_version);
     epaper.drawString(textbuffer, gridx1, 58);
 
     epaper.fullUpdate(false, false, &box);
