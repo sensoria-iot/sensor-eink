@@ -1,14 +1,15 @@
 // Edit your API setup and general configuration options:
 #include "../config.h"
 #include "driver/i2c.h"
-
+#include "esp_mac.h"
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
-
+// IO Definitions
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
-float firmware_version = 1.44;
+#define BUTTON1           GPIO_NUM_46
+float firmware_version = 1.45;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -165,7 +166,10 @@ static const char *TAG = "CO2_ST";
 
 bool ready_to_measure = false;
 bool measure_taken = false;
+
+uint16_t co2 = 0;
 float tem = 0;
+float hum = 0;
 
 #define DEVICE_PARAM_WIFI_RESET "Turn slider to 100 to reset WiFi"
 #define LOW_BATT_ALERT 20
@@ -201,6 +205,11 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 #include "esp_tls.h"
 #include "esp_netif.h"
 #include "esp_http_client.h"
+
+// OTA
+#include "esp_ota_ops.h"
+#include "esp_https_ota.h"
+#include "esp_app_format.h"
 
 // RTC
 #include <bb_rtc.h>
@@ -250,11 +259,8 @@ char res_message[40];
 
 // Flag to know that how many times the device booted
 int16_t nvs_boots = 0;
-
-#define BUTTON1 GPIO_NUM_46
-#define BUTTON2 GPIO_NUM_38
-bool button1_wakeup = false;
-bool button2_wakeup = false;
+// Define the global MAC address variable
+char* mac_string;
 
 // EPD framebuffer
 uint8_t *fb;
@@ -274,6 +280,47 @@ void deep_sleep()
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
+/**
+ * @brief Fetch and return the Microchip MAC address as a formatted string.
+ * 
+ * This function retrieves the base MAC address from EFUSE and formats it
+ * as a hexadecimal string for use in JSON or other text-based protocols.
+ * 
+ * @return A dynamically allocated C-string with the formatted MAC address in the format "xx:xx:xx:xx:xx:xx".
+ *         Caller is responsible for freeing the memory.
+ */
+char* getFormattedMacAddress()
+{
+    uint8_t base_mac_addr[6] = {0};
+    esp_err_t ret = esp_read_mac(base_mac_addr, ESP_MAC_EFUSE_FACTORY);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to read base MAC address (error: %s)", esp_err_to_name(ret));
+        return nullptr;
+    }
+
+    ESP_LOGI(TAG, "Base MAC Address fetched successfully: 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x",
+             base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
+             base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
+
+    // Allocate memory for the formatted MAC address string
+    // Example: "aa:bb:cc:dd:ee:ff" (17 characters + null terminator)
+    char* mac_string = (char*) malloc(18 * sizeof(char));
+    if (!mac_string)
+    {
+        ESP_LOGE(TAG, "Failed to allocate memory for MAC address string");
+        return nullptr;
+    }
+
+    // Format the MAC address as a string
+    sprintf(mac_string, "%02x:%02x:%02x:%02x:%02x:%02x",
+            base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
+            base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
+
+    ESP_LOGI(TAG, "Formatted MAC Address: %s", mac_string);
+    return mac_string;
+}
+
 // Event handler for HTTP requests
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 {
@@ -287,6 +334,7 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 
     case HTTP_EVENT_ON_CONNECTED:
         ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
+        output_len = 0;  // Reset for new request
         break;
 
     case HTTP_EVENT_HEADER_SENT:
@@ -302,29 +350,30 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
         ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
         ESP_LOG_BUFFER_CHAR(TAG, evt->data, evt->data_len);
          if (output_len == 0 && evt->user_data) {
-                // we are just starting to copy the output data into the use
+                // NOTE: This assumes user_data buffer is at least MAX_HTTP_OUTPUT_BUFFER bytes
+                // Clear only what we need for the response
+                ESP_LOGI(TAG, "Clearing user_data buffer");
                 memset(evt->user_data, 0, MAX_HTTP_OUTPUT_BUFFER);
             }
-            /*
-             *  Check for chunked encoding is added as the URL for chunked encoding used in this example returns binary data.
-             *  However, event handler can also be used in case chunked encoding is used.
-             */
-            if (!esp_http_client_is_chunked_response(evt->client)) {
-                // If user_data buffer is configured, copy the response into the buffer
-                int copy_len = 0;
-                if (evt->user_data) {
-                    // The last byte in evt->user_data is kept for the NULL character in case of out-of-bound access.
-                    copy_len = MIN(evt->data_len, (MAX_HTTP_OUTPUT_BUFFER - output_len));
-                    if (copy_len) {
-                        memcpy(evt->user_data + output_len, evt->data, copy_len);
-                    }
-                } else {
-                    int content_len = esp_http_client_get_content_length(evt->client);
             
-                    copy_len = MIN(evt->data_len, (content_len - output_len));
-                    if (copy_len) {
-                        memcpy(output_buffer + output_len, evt->data, copy_len);
-                    }
+            // Copy data to buffer (handle both chunked and non-chunked)
+            int copy_len = 0;
+            if (evt->user_data) {
+                // User provided buffer - copy data regardless of chunked encoding
+                copy_len = MIN(evt->data_len, (MAX_HTTP_OUTPUT_BUFFER - output_len));
+                if (copy_len) {
+                    ESP_LOGI(TAG, "Copying %d bytes to user_data at offset %d", copy_len, output_len);
+                    memcpy(evt->user_data + output_len, evt->data, copy_len);
+                }
+                output_len += copy_len;
+                ESP_LOGI(TAG, "Total output_len now: %d", output_len);
+            } else if (!esp_http_client_is_chunked_response(evt->client)) {
+                // Global buffer - only for non-chunked (legacy behavior)
+                ESP_LOGI(TAG, "No user_data, using global output_buffer");
+                int content_len = esp_http_client_get_content_length(evt->client);
+                copy_len = MIN(evt->data_len, (content_len - output_len));
+                if (copy_len) {
+                    memcpy(output_buffer + output_len, evt->data, copy_len);
                 }
                 output_len += copy_len;
             }
@@ -411,6 +460,169 @@ static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_pa
     }
     esp_rmaker_param_update_and_report(param, val);
     return ESP_OK;
+}
+
+/**
+ * @brief Check for firmware updates from the API
+ * 
+ * Makes a GET request to the firmware version endpoint and compares
+ * with the current firmware version.
+ * 
+ * @return true if a newer version is available, false otherwise
+ */
+bool check_firmware_update(char* update_url, size_t url_size)
+{
+    char url[256];
+    snprintf(url, sizeof(url), "http://%s/api/firmware/S3/%s", WEB_HOST, nvs_sensor_id);
+    
+    ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
+    
+    // Allocate response buffer on heap to avoid stack overflow
+    char *local_response_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (local_response_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+        return false;
+    }
+    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 5000,
+        .event_handler = _http_event_handler,
+        .user_data = local_response_buffer,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize HTTP client");
+        free(local_response_buffer);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "HTTP client initialized, performing request...");
+    esp_err_t err = esp_http_client_perform(client);
+    ESP_LOGI(TAG, "HTTP client perform returned: %s", esp_err_to_name(err));
+    
+    bool update_available = false;
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Getting status code from client handle: %p", (void*)client);
+        int status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "Firmware check HTTP Status = %d", status_code);
+        
+        if (status_code == 200) {
+            ESP_LOGI(TAG, "Response: %s", local_response_buffer);
+            
+            // Parse JSON response
+            cJSON *root = cJSON_Parse(local_response_buffer);
+            if (root != NULL) {
+                cJSON *version = cJSON_GetObjectItem(root, "version");
+                cJSON *status = cJSON_GetObjectItem(root, "status");
+                cJSON *path = cJSON_GetObjectItem(root, "path");
+                
+                if (cJSON_IsNumber(version) && cJSON_IsString(status) && cJSON_IsString(path)) {
+                    float available_version = version->valuedouble;
+                    
+                    ESP_LOGI(TAG, "Current firmware: %.2f, Available: %.2f", 
+                             firmware_version, available_version);
+                    
+                    if (available_version > firmware_version && 
+                        strcmp(status->valuestring, "OK") == 0) {
+                        // Copy the download URL
+                        snprintf(update_url, url_size, "%s", path->valuestring);
+                        update_available = true;
+                        ESP_LOGI(TAG, "New firmware available! Version %.2f at %s", 
+                                 available_version, update_url);
+                    } else {
+                        ESP_LOGI(TAG, "Firmware is up to date");
+                    }
+                }
+                cJSON_Delete(root);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "Firmware check failed: %s", esp_err_to_name(err));
+    }
+    
+    esp_http_client_cleanup(client);
+    free(local_response_buffer);
+    return update_available;
+}
+
+/**
+ * @brief Perform OTA firmware update
+ * 
+ * Downloads and installs the new firmware from the specified URL.
+ * The device will restart automatically after successful update.
+ * 
+ * @param url The URL to download the firmware from
+ * @return ESP_OK on success
+ */
+esp_err_t perform_ota_update(const char* url)
+{
+    ESP_LOGI(TAG, "Starting OTA update from: %s", url);
+    
+    esp_http_client_config_t ota_config = {
+        .url = url,
+        .timeout_ms = 30000,
+        .skip_cert_common_name_check = true,  // Allow HTTP without certificate verification
+        .keep_alive_enable = true,
+    };
+    
+    esp_https_ota_config_t ota_https_config = {
+        .http_config = &ota_config,
+    };
+    
+    esp_err_t ret = esp_https_ota(&ota_https_config);
+    
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA update successful! Restarting...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
+    } else {
+        ESP_LOGE(TAG, "OTA update failed: %s", esp_err_to_name(ret));
+    }
+    
+    return ret;
+}
+
+/**
+ * @brief Check and perform OTA update if available
+ * 
+ * This function should be called once per day when the RTC alarm
+ * indicates a day change has occurred.
+ */
+void check_and_update_firmware()
+{
+    ESP_LOGI(TAG, "Checking for firmware updates (once per day)...");
+    
+    char update_url[256] = {0};
+    
+    if (check_firmware_update(update_url, sizeof(update_url))) {
+        ESP_LOGI(TAG, "Update available, starting download...");
+        
+        // Show update message on display
+        epaper.setFont(ubuntu30);
+        char textbuffer[60];
+        snprintf(textbuffer, sizeof(textbuffer), "Updating firmware...");
+        epaper.drawString(textbuffer, 200, EPD_HEIGHT/2 - 50);
+        epaper.fullUpdate(true, false);
+        
+        // Perform the update
+        esp_err_t ret = perform_ota_update(update_url);
+        
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to perform OTA update");
+            // Show error on display
+            snprintf(textbuffer, sizeof(textbuffer), "Update failed!");
+            epaper.drawString(textbuffer, 200, EPD_HEIGHT/2);
+            epaper.fullUpdate(true, false);
+        }
+        // If successful, device will restart, so we never reach here
+    } else {
+        ESP_LOGI(TAG, "No firmware update available");
+    }
 }
 
 void parse_json(const char* json_string)
@@ -540,6 +752,9 @@ void parse_json(const char* json_string)
         printf("RTC setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
         rtc.setTime(&cTime); // Set the current time to the RTC
  
+        // Check for firmware updates once per day when alarm day changes
+        check_and_update_firmware();
+        
         // Use mktime to normalize and manage transitions
         time_t raw_time;
         struct tm normalized_alarm = aTime;
@@ -707,7 +922,7 @@ void draw_response_analisis(int tipo) {
     epaper.setFont(ubuntu12);
     epaper.setTextColor(0X0);
     textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d", alarm_day, alarm_hour, alarm_min);
+    snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d VER. %.2f", alarm_day, alarm_hour, alarm_min, firmware_version);
     epaper.drawString(textbuffer, gridx1, 58);
 
     epaper.fullUpdate(false, false, &box);
@@ -756,9 +971,15 @@ static void schedule_rtc_wakeup_minutes(int minutes)
 // Coming back to 1.2 here since it was logging 2 times
 void send_data_to_api()
 {
-    // Declare local_response_buffer with size (MAX_HTTP_OUTPUT_BUFFER + 1) to prevent out of bound access when
-    // it is used by functions like strlen(). The buffer should only be used upto size MAX_HTTP_OUTPUT_BUFFER
-    char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
+    // Allocate response buffer on heap to avoid stack overflow
+    // The buffer should only be used up to size MAX_HTTP_OUTPUT_BUFFER
+    char *local_response_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (local_response_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+        return;
+    }
+    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    
     /**
      * NOTE: All the configuration parameters for http_client must be spefied either in URL or as host and path parameters.
      * If host and path parameters are not set, query parameter will be ignored. In such cases,
@@ -788,7 +1009,8 @@ void send_data_to_api()
     }
     else
     {
-        ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "HTTP POST request failed: %s. Scheduling additional wake-up", esp_err_to_name(err));
+        schedule_rtc_wakeup_minutes(10);
     }
 
     // Got a body - parse and draw
@@ -798,6 +1020,7 @@ void send_data_to_api()
 
     // Clean up
     esp_http_client_cleanup(client);
+    free(local_response_buffer);
 
 }
 
@@ -952,8 +1175,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0xF);
                  epaper.drawString("Provisioning timed-out.", 10, 110);
-                 epaper.drawString("Press wake for half a second or connect your device to USB-C", 10, 160);
-                 epaper.drawString("The LED signal should flash BLUE when it's ready", 10, 210);
+                 epaper.drawString("< Press RESET and connect your device to USB-C", 10, 160);
+                 epaper.drawString("The LED signal should flash BLUE when it's ready >", 10, 210);
                  epaper.fullUpdate();
             }
             default:
@@ -1154,7 +1377,6 @@ void scd_read()
         ESP_LOGE(TAG, "SCD4x ready flag is not coming in time");
     }
 
-    uint16_t co2;
     int32_t temperature;
     int32_t humidity;
     error = scd4x_read_measurement(&co2, &temperature, &humidity);
@@ -1173,7 +1395,7 @@ void scd_read()
         read_batt_level();
         tem = (float)temperature / 1000;
         tem = roundf(tem * 10) / 10;
-        float hum = (float)humidity / 1000;
+        hum = (float)humidity / 1000;
         hum = roundf(hum * 10) / 10;
         ESP_LOGI(TAG, "CO2 : %u", co2);
         ESP_LOGI(TAG, "Temp: %d m°C %.1f 0xFC", (int)temperature, tem);
@@ -1189,12 +1411,24 @@ void scd_read()
 
         cursor_x = EPD_WIDTH - 300;
         scd_render_h(hum, cursor_x, cursor_y);
+        //epaper.loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
+        epaper.fullUpdate(true, false);
+    }
 
-        // IP address.
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGI(TAG, "scd4x_power_down()");
+    scd4x_power_down();
+
+    sensirion_i2c_hal_free();
+}
+
+void build_request_json() {
+    // IP address.
         esp_netif_ip_info_t ip_info;
         esp_netif_get_ip_info(esp_netif_get_default_netif(), &ip_info);
         sprintf(esp_ip, IPSTR, IP2STR(&ip_info.ip));
-
+        // Read MCU MAC
+        mac_string = getFormattedMacAddress();
         memset(&result, 0, sizeof(json_gen_test_result_t));
         json_gen_str_t jstr;
         json_gen_str_start(&jstr, result.buf, sizeof(result.buf), flush_str, &result);
@@ -1206,22 +1440,11 @@ void scd_read()
         json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
+        json_gen_obj_set_string(&jstr, "mac", mac_string);
         json_gen_obj_set_int(&jstr, "batt_level", batt_level);
         json_gen_end_object(&jstr);
         json_gen_end_object(&jstr);
         json_gen_str_end(&jstr);
-        // printf("JSON: %s\n", result.buf);
-        
-
-        //epaper.loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
-        epaper.fullUpdate(true, false);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(300));
-    ESP_LOGI(TAG, "scd4x_power_down()");
-    scd4x_power_down();
-
-    sensirion_i2c_hal_free();
 }
 
 void app_main()
@@ -1428,6 +1651,7 @@ void app_main()
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
+    build_request_json();
     send_data_to_api();
 
     deep_sleep();

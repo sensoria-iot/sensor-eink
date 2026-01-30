@@ -30,6 +30,8 @@ set(app_requires
                  app_network
                  driver
                  esp_adc
+                 esp_https_ota
+                 app_update
                  )
 
 if (${target} EQUAL "esp32s3")
