@@ -9,7 +9,7 @@ size_t sensor_id_size;
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
 #define BUTTON1           GPIO_NUM_46
-float firmware_version = 1.44;
+float firmware_version = 1.45;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -1175,8 +1175,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper.fillRect(0, 80, EPD_WIDTH, 400, 0xF);
                  epaper.drawString("Provisioning timed-out.", 10, 110);
-                 epaper.drawString("Press wake for half a second or connect your device to USB-C", 10, 160);
-                 epaper.drawString("The LED signal should flash BLUE when it's ready", 10, 210);
+                 epaper.drawString("< Press RESET and connect your device to USB-C", 10, 160);
+                 epaper.drawString("The LED signal should flash BLUE when it's ready >", 10, 210);
                  epaper.fullUpdate();
             }
             default:
