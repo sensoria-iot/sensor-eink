@@ -1537,9 +1537,8 @@ void app_main()
     nvs_boots++;
     // Set new value
     nvs_set_i16(nvs_h, "boots", nvs_boots);
-    if (strcmp(nvs_sensor_id, SENSOR_ID) == 0) {
-        printf("SENSOR_ID matches NVS\n");
-    } else if (strcmp(SENSOR_ID, "") == 0) {
+    
+    if (strcmp(SENSOR_ID, "") == 0) {
         printf("SENSOR_ID is empty reading it from NVS\n");
     } else {
         nvs_set_str(nvs_h, "sensor_id", SENSOR_ID);
