@@ -264,6 +264,8 @@ char* mac_string;
 
 // EPD framebuffer
 uint8_t *fb;
+// RTC Time
+struct tm RTCTime;
 
 extern "C"
 {
@@ -1427,6 +1429,8 @@ void build_request_json() {
         esp_netif_ip_info_t ip_info;
         esp_netif_get_ip_info(esp_netif_get_default_netif(), &ip_info);
         sprintf(esp_ip, IPSTR, IP2STR(&ip_info.ip));
+        char rtc_time_str[20];
+        sprintf(rtc_time_str, "%d-%d-%d %02d:%02d:%02d", RTCTime.tm_year, RTCTime.tm_mon, RTCTime.tm_mday, RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec);
         // Read MCU MAC
         mac_string = getFormattedMacAddress();
         memset(&result, 0, sizeof(json_gen_test_result_t));
@@ -1438,6 +1442,7 @@ void build_request_json() {
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
         json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
+        json_gen_obj_set_string(&jstr, "rtc_t", rtc_time_str);
         json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
         json_gen_obj_set_string(&jstr, "mac", mac_string);
@@ -1551,7 +1556,6 @@ void app_main()
     scd_read();
 
     printf("Read RTC\n");
-    struct tm myTime;
     int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO); // Do not init, already done. CONFIG_SDA_GPIO, CONFIG_SCL_GPIO
     if (rc != RTC_SUCCESS) {
         printf("Error in rtc.init() I2C is already initialized\n");
@@ -1560,9 +1564,9 @@ void app_main()
         } */
     } else {
         // RTC get time
-        rtc.getTime(&myTime);
-        rtc_day = myTime.tm_mday;
-        printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon, myTime.tm_wday);
+        rtc.getTime(&RTCTime);
+        rtc_day = RTCTime.tm_mday;
+        printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec, RTCTime.tm_mday, RTCTime.tm_mon, RTCTime.tm_wday);
     }
     
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
