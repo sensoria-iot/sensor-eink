@@ -9,7 +9,7 @@ size_t sensor_id_size;
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
 #define BUTTON1           GPIO_NUM_46
-float firmware_version = 1.45;
+float firmware_version = 1.46;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -1429,8 +1429,8 @@ void build_request_json() {
         esp_netif_ip_info_t ip_info;
         esp_netif_get_ip_info(esp_netif_get_default_netif(), &ip_info);
         sprintf(esp_ip, IPSTR, IP2STR(&ip_info.ip));
-        char rtc_time_str[20];
-        sprintf(rtc_time_str, "%d-%d-%d %02d:%02d:%02d", RTCTime.tm_year, RTCTime.tm_mon, RTCTime.tm_mday, RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec);
+        char rtc_time_str[28];
+        sprintf(rtc_time_str, "%d-%02d-%02d %02d:%02d:%02d", RTCTime.tm_year-100, RTCTime.tm_mon, RTCTime.tm_mday, RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec);
         // Read MCU MAC
         mac_string = getFormattedMacAddress();
         memset(&result, 0, sizeof(json_gen_test_result_t));
