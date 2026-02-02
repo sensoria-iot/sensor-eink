@@ -1443,7 +1443,6 @@ void build_request_json() {
         json_gen_push_object(&jstr, "client");
         json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "rtc_t", rtc_time_str);
-        json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
         json_gen_obj_set_string(&jstr, "mac", mac_string);
         json_gen_obj_set_int(&jstr, "batt_level", batt_level);
