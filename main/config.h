@@ -7,7 +7,6 @@
 #define MESSAGE_SCAN_QR2 "2 Scan the QR-CODE"
 
 #define FORCE_WIFI_RESET 0
-#define JSON_TIMEZONE "Europe/Madrid"
 
 #define WEB_PORT "80"
 #define WEB_HOST "sensoria.cat" // dev.

@@ -1197,7 +1197,6 @@ void scd_read()
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
         json_gen_obj_set_string(&jstr, "key", SENSOR_ID);
-        json_gen_obj_set_string(&jstr, "timezone", JSON_TIMEZONE);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
         json_gen_obj_set_int(&jstr, "batt_level", batt_level);
         json_gen_end_object(&jstr);
