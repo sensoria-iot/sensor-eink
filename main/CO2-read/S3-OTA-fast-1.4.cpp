@@ -9,7 +9,7 @@ size_t sensor_id_size;
 #define POWER_STATE_PIN   3
 #define POWER_HOLD_PIN    21
 #define BUTTON1           GPIO_NUM_46
-float firmware_version = 1.46;
+float firmware_version = 1.47;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -1443,6 +1443,8 @@ void build_request_json() {
         json_gen_push_object(&jstr, "client");
         json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "rtc_t", rtc_time_str);
+        json_gen_obj_set_string(&jstr, "model", "S3");
+        json_gen_obj_set_float(&jstr, "version", firmware_version);
         json_gen_obj_set_string(&jstr, "ip", esp_ip);
         json_gen_obj_set_string(&jstr, "mac", mac_string);
         json_gen_obj_set_int(&jstr, "batt_level", batt_level);

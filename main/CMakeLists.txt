@@ -3,11 +3,8 @@ idf_build_get_property(target IDF_TARGET)
 message(STATUS "→ Building example for ${target}")
 
 # 1 Send SCD40 using Rainmaker
-#set(app_sources "CO2-read/station-to-API-fast1.2.cpp") # new AI data
-
 set(app_sources "CO2-read/led_controller.c"
-                #"CO2-read/STA-RTC-fast-1.4.cpp"
-                "CO2-read/STA-OTA-fast-1.4.cpp"
+                "CO2-read/S3-OTA-fast-1.4.cpp"
                 )
 # Only test I2C. RTC address is 0x51
 #set(app_sources "tools/i2cscan.c")
