@@ -48,3 +48,5 @@ https://sensoria.cat/#contact
 [martinberlin](https://github.com/martinberlin) ESP-IDF Firmware / Eink controllers 
 
 [santi-tonelli](https://github.com/santiTonelliPunta) AI expert / UI UX design 
+
+[Larry Bank](https://github.com/bitbank2) Eink and code-optimization expert. We collaborate in the hardware design for new FastEPD boards. Thanks a lot Larry for all the efforts and for being the first getting the ESP32-C5 working with an 8 bit parallel display.
