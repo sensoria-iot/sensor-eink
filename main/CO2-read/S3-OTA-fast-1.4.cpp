@@ -1503,7 +1503,7 @@ void app_main()
     esp_err_t err;
     // WiFi log level
     esp_log_level_set("wifi", ESP_LOG_ERROR);
-    epaper.initPanel(BB_PANEL_V7_RAW);
+    epaper.initPanel(BB_PANEL_SENSORIA_C5);
     epaper.setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
     epaper.setRotation(180);
     // 4 bit per pixel: 16 grays mode
