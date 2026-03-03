@@ -1,3 +1,4 @@
+#warning "This is just a TI Fuel gauge test, not the sensoria firmware"
 #include "../config.h"
 #include "i2c_bus.h"
 

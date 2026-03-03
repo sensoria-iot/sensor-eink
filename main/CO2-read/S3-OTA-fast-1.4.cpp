@@ -1,14 +1,12 @@
 // Edit your API setup and general configuration options:
 #include "../config.h"
-#include "driver/i2c.h"
+// No more legacy I2C driver
 #include "esp_mac.h"
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
 // IO Definitions
-#define POWER_STATE_PIN   3
-#define POWER_HOLD_PIN    21
-#define BUTTON1           GPIO_NUM_46
+#define POWER_HOLD_PIN    1
 float firmware_version = 1.47;
 
 // Declare ASCII names for each of the supported RTC types
@@ -19,113 +17,18 @@ uint8_t alarm_day = 0;
 uint8_t alarm_hour = 0;
 uint8_t alarm_min = 0;
 
-extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
-    rtc_alarm_triggered = true;
-}
-
 // FastEPD component:
 #include "FastEPD.cpp"
-FASTEPD epaper;
+static FASTEPD *epaper = nullptr;
 
 // Dotstar 2812 LED in the strip
 #include "led_controller.h"
 
-
-//#define ADC_VOLTAGE_READ
 // BQ27426 fuel gauge (For next revision)
 #include "TiFuelGauge.h"
 TiFuelGauge TiFuel;
 int batt_level = 0;
 
-#ifdef ADC_VOLTAGE_READ
-    #include "soc/soc_caps.h"
-    #include "esp_adc/adc_oneshot.h"
-    #include "esp_adc/adc_cali.h"
-    #include "esp_adc/adc_cali_scheme.h"
-    #define ADC2_CHANNEL ADC_CHANNEL_0  // IO1
-    #define ADC_ATTEN    ADC_ATTEN_DB_12
-    static int adc_raw[1][10];
-    static int voltage[1][10];
-    adc_oneshot_unit_handle_t adc1_handle;
-    adc_cali_handle_t adc1_cali_chan0_handle = NULL;
-    bool do_calibration1_chan0 = false;
-
-    int adc_read_batt() {
-        int batt = 0;
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC2_CHANNEL, &adc_raw[0][0]));
-        ESP_LOGI("ADC", "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC2_CHANNEL, adc_raw[0][0]);
-        if (do_calibration1_chan0) {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
-            // TODO: Use different formula for this
-            batt = ((adc_raw[0][0]*0.1) - 55) *3;
-            ESP_LOGI("ADC", "ADC%d Channel[%d] Cali Voltage: %d mV BATT: %d %%", ADC_UNIT_1 + 1, ADC2_CHANNEL, voltage[0][0], batt);
-        }
-        return batt;
-    }
-    /*---------------------------------------------------------------
-        ADC Calibration
-    ---------------------------------------------------------------*/
-    static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
-    {
-        adc_cali_handle_t handle = NULL;
-        esp_err_t ret = ESP_FAIL;
-        bool calibrated = false;
-
-    #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-        if (!calibrated) {
-            ESP_LOGI("ADC", "calibration scheme version is %s", "Curve Fitting");
-            adc_cali_curve_fitting_config_t cali_config = {
-                .unit_id = unit,
-                .chan = channel,
-                .atten = atten,
-                .bitwidth = ADC_BITWIDTH_DEFAULT,
-            };
-            ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
-            if (ret == ESP_OK) {
-                calibrated = true;
-            }
-        }
-    #endif
-
-    #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-        if (!calibrated) {
-            ESP_LOGI("ADC", "calibration scheme version is %s", "Line Fitting");
-            adc_cali_line_fitting_config_t cali_config = {
-                .unit_id = unit,
-                .atten = atten,
-                .bitwidth = ADC_BITWIDTH_DEFAULT,
-            };
-            ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
-            if (ret == ESP_OK) {
-                calibrated = true;
-            }
-        }
-    #endif
-
-        *out_handle = handle;
-        if (ret == ESP_OK) {
-            ESP_LOGI("ADC", "Calibration Success");
-        } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
-            ESP_LOGW("ADC", "eFuse not burnt, skip software calibration");
-        } else {
-            ESP_LOGE("ADC", "Invalid arg or no memory");
-        }
-
-        return calibrated;
-    }
-
-    static void adc_calibration_deinit(adc_cali_handle_t handle)
-    {
-    #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-        ESP_LOGI("ADC", "deregister %s calibration scheme", "Curve Fitting");
-        ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
-
-    #elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-        ESP_LOGI("ADC", "deregister %s calibration scheme", "Line Fitting");
-        ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
-    #endif
-    }
-#endif
 // Fonts
 #include "fast/ubuntu12.h"
 #include "fast/ubuntu20.h"
@@ -605,11 +508,11 @@ void check_and_update_firmware()
         ESP_LOGI(TAG, "Update available, starting download...");
         
         // Show update message on display
-        epaper.setFont(ubuntu30);
+        epaper->setFont(ubuntu30);
         char textbuffer[60];
         snprintf(textbuffer, sizeof(textbuffer), "Updating firmware...");
-        epaper.drawString(textbuffer, 200, EPD_HEIGHT/2 - 50);
-        epaper.fullUpdate(true, false);
+        epaper->drawString(textbuffer, 200, EPD_HEIGHT/2 - 50);
+        epaper->fullUpdate(true, false);
         
         // Perform the update
         esp_err_t ret = perform_ota_update(update_url);
@@ -618,8 +521,8 @@ void check_and_update_firmware()
             ESP_LOGE(TAG, "Failed to perform OTA update");
             // Show error on display
             snprintf(textbuffer, sizeof(textbuffer), "Update failed!");
-            epaper.drawString(textbuffer, 200, EPD_HEIGHT/2);
-            epaper.fullUpdate(true, false);
+            epaper->drawString(textbuffer, 200, EPD_HEIGHT/2);
+            epaper->fullUpdate(true, false);
         }
         // If successful, device will restart, so we never reach here
     } else {
@@ -788,11 +691,11 @@ void parse_json(const char* json_string)
  */
 void draw_tendencia(int x, int y, int direction, uint8_t color = 0x0) {
     if (direction > 0) {
-        epaper.loadG5Image(arrow_up, x, y, 0xF, color);
+        epaper->loadG5Image(arrow_up, x, y, 0xF, color);
     } else if (direction < 0) {
-        epaper.loadG5Image(arrow_down, x, y, 0xF, color);
+        epaper->loadG5Image(arrow_down, x, y, 0xF, color);
     } else {
-        epaper.loadG5Image(arrow_neutral, x, y, 0xF, color);
+        epaper->loadG5Image(arrow_neutral, x, y, 0xF, color);
     }
 }
 
@@ -802,8 +705,8 @@ void draw_tendencia(int x, int y, int direction, uint8_t color = 0x0) {
  * @param tipo 
  */
 void draw_response_analisis(int tipo) {
-    epaper.fillRect(0, 80, EPD_WIDTH, 300, 0xF);
-    epaper.setFont(ubuntu40);
+    epaper->fillRect(0, 80, EPD_WIDTH, 300, 0xF);
+    epaper->setFont(ubuntu40);
     int gridx1 = 150; int gridx2 = 800;
     int gridy1 = 200; int gridy2 = 450;
     char textbuffer[40];
@@ -814,56 +717,56 @@ void draw_response_analisis(int tipo) {
     switch (tipo) {
     case 0: {
         /* ceo */
-        epaper.setTextColor((res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
+        epaper->setTextColor((res_confiable_bp_semanal) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d €", res_beneficio_7);
-        epaper.drawString(textbuffer, gridx1, gridy1);
+        epaper->drawString(textbuffer, gridx1, gridy1);
         textbuffer[0] = '\0'; // Reset textbuffer to empty string
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_30);
         snprintf(textbuffer, sizeof(textbuffer), "%d €", res_beneficio_30);
-        epaper.drawString(textbuffer, gridx2, gridy1);
+        epaper->drawString(textbuffer, gridx2, gridy1);
 
-        epaper.setFont(ubuntu12);
+        epaper->setFont(ubuntu12);
         if (ai_data_report) {
-            epaper.drawString("ESTIMATED WEEKLY BENEFIT", gridx1, gridy1+50);
-            epaper.drawString("ESTIMATED MONTHLY BENEFIT", gridx2, gridy1+50);
+            epaper->drawString("ESTIMATED WEEKLY BENEFIT", gridx1, gridy1+50);
+            epaper->drawString("ESTIMATED MONTHLY BENEFIT", gridx2, gridy1+50);
         }
     }
         break;
     
     case 1:
         /* teams */
-        epaper.setTextColor((res_confiable_bp_semanal && res_bienestar_7 > 0) ? 0x0 : color_no_confiable);
+        epaper->setTextColor((res_confiable_bp_semanal && res_bienestar_7 > 0) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_7);
-        epaper.drawString(textbuffer, gridx1, gridy1);
+        epaper->drawString(textbuffer, gridx1, gridy1);
         textbuffer[0] = '\0'; // Reset textbuffer to empty string
-        epaper.setTextColor((res_confiable_bp_mensual && res_bienestar_30 > 0) ? 0x0 : color_no_confiable);
+        epaper->setTextColor((res_confiable_bp_mensual && res_bienestar_30 > 0) ? 0x0 : color_no_confiable);
         snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_bienestar_30);
-        epaper.drawString(textbuffer, gridx2, gridy1);
+        epaper->drawString(textbuffer, gridx2, gridy1);
 
-        epaper.setFont(ubuntu12);
+        epaper->setFont(ubuntu12);
         if (ai_data_report) {
-        epaper.drawString("WEEKLY WELLBEING INDEX", gridx1, gridy1+50);
-        epaper.drawString("MONTHLY WELLBEING INDEX", gridx2, gridy1+50);
+        epaper->drawString("WEEKLY WELLBEING INDEX", gridx1, gridy1+50);
+        epaper->drawString("MONTHLY WELLBEING INDEX", gridx2, gridy1+50);
         }
         break;
     }
     // Same for both
     if (ai_data_report) {
         if (res_confiable_bp_semanal == 0) {
-                epaper.drawString(not_trustworthy, gridx1, gridy1+90);
+                epaper->drawString(not_trustworthy, gridx1, gridy1+90);
             }
             if (res_confiable_bp_mensual == 0) {
-                epaper.drawString(not_trustworthy, gridx2, gridy1+90);
+                epaper->drawString(not_trustworthy, gridx2, gridy1+90);
             }
-        epaper.drawString("MODEL CONFIDENCE", gridx1, gridy2+50);
+        epaper->drawString("MODEL CONFIDENCE", gridx1, gridy2+50);
         textbuffer[0] = '\0';
         if (res_confiable_prediccion) {
             if (strcmp(res_alert_tipo, "NON") == 0) {
                 snprintf(textbuffer, sizeof(textbuffer), "NO MORE ALERTS TODAY");
-                epaper.drawString(textbuffer, gridx2, gridy2+50);
+                epaper->drawString(textbuffer, gridx2, gridy2+50);
             }  else {
                 snprintf(textbuffer, sizeof(textbuffer), "NEXT PREDICTED %s ALERT:", res_alert_tipo);
-                epaper.drawString(textbuffer, gridx2, gridy2+50);
+                epaper->drawString(textbuffer, gridx2, gridy2+50);
                 char * unit_type = "°C";
                 if (strcmp(res_alert_tipo, "CO2") == 0) {
                     unit_type = "ppm";
@@ -873,36 +776,36 @@ void draw_response_analisis(int tipo) {
                 }
                 textbuffer[0] = '\0';
                 snprintf(textbuffer, sizeof(textbuffer), "%d %s", res_alert_v, unit_type);
-                epaper.drawString(textbuffer, gridx2, gridy2+75);  // Value unit (°C o %)
+                epaper->drawString(textbuffer, gridx2, gridy2+75);  // Value unit (°C o %)
             }
         } else {
-            epaper.setTextColor(color_no_confiable-2);
+            epaper->setTextColor(color_no_confiable-2);
             snprintf(textbuffer, sizeof(textbuffer), "THE SYSTEM IS STILL LEARNING");
-            epaper.drawString(textbuffer, gridx2, gridy2+50);
+            epaper->drawString(textbuffer, gridx2, gridy2+50);
             textbuffer[0] = '\0';
             snprintf(textbuffer, sizeof(textbuffer), "FROM YOUR DATA");
-            epaper.drawString(textbuffer, gridx2, gridy2+80);
+            epaper->drawString(textbuffer, gridx2, gridy2+80);
         }
     } else {
-        epaper.drawString("REPORT NEEDS 2 DAYS DATA STREAM", gridx2, gridy2+75);
+        epaper->drawString("REPORT NEEDS 2 DAYS DATA STREAM", gridx2, gridy2+75);
     }
-    epaper.drawString(res_message, gridx1, gridy2+75); // message
+    epaper->drawString(res_message, gridx1, gridy2+75); // message
     
-    epaper.setFont(ubuntu40);
-    epaper.setTextColor((res_confianza>50) ? 0 : color_no_confiable);
+    epaper->setFont(ubuntu40);
+    epaper->setTextColor((res_confianza>50) ? 0 : color_no_confiable);
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%d%%", res_confianza);
-    epaper.drawString(textbuffer, gridx1, gridy2);
+    epaper->drawString(textbuffer, gridx1, gridy2);
     
     
     if (res_confiable_prediccion && res_alert_hrs > 0) {
-        epaper.setTextColor(0);
+        epaper->setTextColor(0);
         textbuffer[0] = '\0';
         snprintf(textbuffer, sizeof(textbuffer), "%d hrs", res_alert_hrs);
-        epaper.drawString(textbuffer, gridx2, gridy2);
+        epaper->drawString(textbuffer, gridx2, gridy2);
     } else {
-        epaper.setTextColor(color_no_confiable);
-        epaper.drawString("coming soon", gridx2, gridy2);
+        epaper->setTextColor(color_no_confiable);
+        epaper->drawString("coming soon", gridx2, gridy2);
     }
 
     BB_RECT box;
@@ -911,23 +814,23 @@ void draw_response_analisis(int tipo) {
     box.w = EPD_WIDTH;
     box.h = EPD_HEIGHT-230;
     // draw design guides
-    epaper.fillRect(29, EPD_HEIGHT/2, EPD_WIDTH-30, 1, 0xA);
-    epaper.drawLine(EPD_WIDTH/2, box.y, EPD_WIDTH/2, box.h, 0xA);
+    epaper->fillRect(29, EPD_HEIGHT/2, EPD_WIDTH-30, 1, 0xA);
+    epaper->drawLine(EPD_WIDTH/2, box.y, EPD_WIDTH/2, box.h, 0xA);
     // Tendencia top row arrows
     draw_tendencia(gridx1-100, gridy1-60, res_tendencia_7d, (res_confiable_bp_semanal && res_bienestar_7 > 0) ? 0x0 : color_no_confiable);
     draw_tendencia(gridx2-100, gridy1-60, res_tendencia_30d, (res_confiable_bp_mensual && res_bienestar_30 > 0) ? 0x0 : color_no_confiable);
     // Confidence & next alert
-    epaper.loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, (res_confianza>50) ? 0x0 : color_no_confiable);
-    epaper.loadG5Image(alert, gridx2-100, gridy2-60, 0xF, (res_confiable_prediccion && res_alert_hrs > 0) ? 0x0 : color_no_confiable);
+    epaper->loadG5Image(confidence_chart, gridx1-100, gridy2-60, 0xF, (res_confianza>50) ? 0x0 : color_no_confiable);
+    epaper->loadG5Image(alert, gridx2-100, gridy2-60, 0xF, (res_confiable_prediccion && res_alert_hrs > 0) ? 0x0 : color_no_confiable);
 
     // NEXT Alarm
-    epaper.setFont(ubuntu12);
-    epaper.setTextColor(0X0);
+    epaper->setFont(ubuntu12);
+    epaper->setTextColor(0X0);
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "NEXT WAKEUP Day:%d %02d:%02d VER. %.2f", alarm_day, alarm_hour, alarm_min, firmware_version);
-    epaper.drawString(textbuffer, gridx1, 58);
+    epaper->drawString(textbuffer, gridx1, 58);
 
-    epaper.fullUpdate(false, false, &box);
+    epaper->fullUpdate(false, false, &box);
 }
 // --- helper: schedule RTC wake in N minutes (simple normalization) ---
 static void schedule_rtc_wakeup_minutes(int minutes)
@@ -1061,39 +964,39 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     int y_offset = 90;
     int border = 2;
 
-    epaper.fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
+    epaper->fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
     for (int y = -2; y < size + border; y ++) {
         for (int x = -2; x < size + border; x ++) {
             color = esp_qrcode_get_module(qrcode, x, y);
             if (color) { color = 0xF; }
             
-            epaper.fillRect((x*sq)+x_offset, (y*sq)+y_offset, sq, sq, color);
+            epaper->fillRect((x*sq)+x_offset, (y*sq)+y_offset, sq, sq, color);
             }
     }
     
-    epaper.setFont(ubuntu20);
+    epaper->setFont(ubuntu20);
     char textbuffer[40];
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR1);
-    epaper.drawString(textbuffer, 430, 110);
+    epaper->drawString(textbuffer, 430, 110);
     // Reset textbuffer to empty string:
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
-    epaper.drawString(textbuffer, 430, 160);
+    epaper->drawString(textbuffer, 430, 160);
 
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s", nvs_sensor_id);
-    epaper.drawString(textbuffer, 462, 310);
+    epaper->drawString(textbuffer, 462, 310);
 
     textbuffer[0] = '\0';
     snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
-    epaper.drawString(textbuffer, 462, 360);
+    epaper->drawString(textbuffer, 462, 360);
     
     BB_RECT box;
     box.x = 50;
     box.y = 50;
     box.w = 800;
     box.h = 360;
-    epaper.fullUpdate(false, false, &box);
+    epaper->fullUpdate(false, false, &box);
 }
 
 /* Event handler for catching RainMaker events */
@@ -1107,14 +1010,14 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             case RMAKER_EVENT_CLAIM_STARTED:
                 led_blink_start(0, 0, 50, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Started.");
-                epaper.fillScreen(16);
-                epaper.fullUpdate(CLEAR_FAST, false);
+                epaper->fillScreen(16);
+                epaper->fullUpdate(CLEAR_FAST, false);
                 vTaskDelay(pdMS_TO_TICKS(300));
                 break;
             case RMAKER_EVENT_CLAIM_SUCCESSFUL:
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Successful.");
-                epaper.fillScreen(16);
-                epaper.fullUpdate(CLEAR_FAST, false);
+                epaper->fillScreen(16);
+                epaper->fullUpdate(CLEAR_FAST, false);
                 vTaskDelay(pdMS_TO_TICKS(300));
                 break;
             case RMAKER_EVENT_USER_NODE_MAPPING_DONE:
@@ -1141,8 +1044,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
             case RMAKER_EVENT_WIFI_RESET:
                 ESP_LOGI(TAG, "Wi-Fi credentials reset.");
-                epaper.drawString("Wi-Fi credentials are cleared", 10, 45);
-                epaper.fullUpdate();
+                epaper->drawString("Wi-Fi credentials are cleared", 10, 45);
+                epaper->fullUpdate();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
                 ESP_LOGI(TAG, "Node reset to factory defaults.");
@@ -1174,12 +1077,12 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             case APP_NETWORK_EVENT_PROV_TIMEOUT: {
                  led_blink_start(50, 0, 0, 500);
                  ESP_LOGI("NETWORK_EVENT", "Provisioning timed-out");
-                 epaper.fillRect(0, 80, EPD_WIDTH, 400, 0x0);
-                 epaper.fillRect(0, 80, EPD_WIDTH, 400, 0xF);
-                 epaper.drawString("Provisioning timed-out.", 10, 110);
-                 epaper.drawString("< Press RESET and connect your device to USB-C", 10, 160);
-                 epaper.drawString("The LED signal should flash BLUE when it's ready >", 10, 210);
-                 epaper.fullUpdate();
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+                 epaper->drawString("Provisioning timed-out.", 10, 110);
+                 epaper->drawString("< Press RESET and connect your device to USB-C", 10, 160);
+                 epaper->drawString("The LED signal should flash BLUE when it's ready >", 10, 210);
+                 epaper->fullUpdate();
             }
             default:
                 ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %"PRIi32, event_id);
@@ -1226,34 +1129,34 @@ void logo_sensoria(int x, int y)
       bg_color = 0;
       fg_color = 0xF;
     #endif
-    epaper.fillCircle(x, y, 100, fg_color);
-    epaper.fillRect(x, y-100, 100, 200, bg_color); // Half Circle
-    epaper.drawCircle(x, y, 100, fg_color);
-    epaper.drawCircle(x, y, 80, fg_color);
-    epaper.drawCircle(x, y, 60, fg_color);
-    epaper.drawCircle(x, y, 40, fg_color);
-    epaper.drawCircle(x, y, 20, fg_color);
-    epaper.drawCircle(x, y, 99, fg_color); // Double lines
-    epaper.drawCircle(x, y, 79, fg_color);
-    epaper.drawCircle(x, y, 59, fg_color);
-    epaper.drawCircle(x, y, 39, fg_color);
-    epaper.drawCircle(x, y, 19, fg_color);
+    epaper->fillCircle(x, y, 100, fg_color);
+    epaper->fillRect(x, y-100, 100, 200, bg_color); // Half Circle
+    epaper->drawCircle(x, y, 100, fg_color);
+    epaper->drawCircle(x, y, 80, fg_color);
+    epaper->drawCircle(x, y, 60, fg_color);
+    epaper->drawCircle(x, y, 40, fg_color);
+    epaper->drawCircle(x, y, 20, fg_color);
+    epaper->drawCircle(x, y, 99, fg_color); // Double lines
+    epaper->drawCircle(x, y, 79, fg_color);
+    epaper->drawCircle(x, y, 59, fg_color);
+    epaper->drawCircle(x, y, 39, fg_color);
+    epaper->drawCircle(x, y, 19, fg_color);
 }
 
 void scd_render_co2(uint16_t co2, int x, int y)
 {
     //logo_sensoria(200, 170);
-    epaper.loadG5Image(ico_co2, x-108, y-58, 0xF, 0x0);
-    epaper.setFont(ubuntu30);
+    epaper->loadG5Image(ico_co2, x-108, y-58, 0xF, 0x0);
+    epaper->setFont(ubuntu30);
     char textbuffer[20];
     snprintf(textbuffer, sizeof(textbuffer), "%d", co2);
-    epaper.drawString(textbuffer, x, y);
+    epaper->drawString(textbuffer, x, y);
 
-    epaper.setFont(ubuntu20);
+    epaper->setFont(ubuntu20);
     snprintf(textbuffer, sizeof(textbuffer), "ppm");
     x += (co2 < 1000) ? 130 : 160;
-    epaper.drawString(textbuffer, x, y);
-    epaper.setFont(ubuntu30);
+    epaper->drawString(textbuffer, x, y);
+    epaper->setFont(ubuntu30);
     
 }
 
@@ -1261,45 +1164,40 @@ void scd_render_temp(double temp, int x, int y)
 {
     char textbuffer[12];
     snprintf(textbuffer, sizeof(textbuffer), "%.1f °C", temp);
-    epaper.drawString(textbuffer, x, y);
+    epaper->drawString(textbuffer, x, y);
 
-    epaper.loadG5Image(ico_temp, x-60, y-46, 0xF, 0x0);
+    epaper->loadG5Image(ico_temp, x-60, y-46, 0xF, 0x0);
 }
 
 void scd_render_h(double hum, int x, int y)
 {
-    epaper.loadG5Image(ico_hum, x-80, y-50, 0xF, 0x0);
+    epaper->loadG5Image(ico_hum, x-80, y-50, 0xF, 0x0);
     char textbuffer[12];
     snprintf(textbuffer, sizeof(textbuffer), "%.1f%%", hum);
-    epaper.drawString(textbuffer, x, y);
+    epaper->drawString(textbuffer, x, y);
 }
 
 void epd_print_error(char *message)
 {
-    led_blink_start(50, 0, 0, 500);
+    //led_blink_start(50, 0, 0, 500);
     int x = 100; // EPD_WIDTH/2-300
     int y = 20;
-    epaper.drawString(message, x, y);
+    epaper->drawString(message, x, y);
 
-    epaper.fullUpdate(true, false);
+    epaper->fullUpdate(true, false);
     vTaskDelay(pdMS_TO_TICKS(1000));
     deep_sleep();
 }
 
 void read_batt_level() {
-#ifdef ADC_VOLTAGE_READ
-    batt_level = adc_read_batt();
-    printf("ADC BATT batt_level:%d %%\n\n", batt_level);
-#else
    if (TiFuel.is_connected()) {
     TiFuel.set_chemistry_profile(TI_CHEM_ID_4_2V);
     batt_level = TiFuel.read_state_of_charge();
     printf("TI BATT voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
    }
-#endif
    /* if (batt_level < LOW_BATT_ALERT) {
-    epaper.setFont(ubuntu_L_30);
-    epaper.drawString("< CHARGE", 40, EPD_HEIGHT - 130);
+    epaper->setFont(ubuntu_L_30);
+    epaper->drawString("< CHARGE", 40, EPD_HEIGHT - 130);
    } */
    if (batt_level > 100) {
     batt_level = 100;
@@ -1312,12 +1210,12 @@ void read_batt_level() {
    #endif
    int x_offset = EPD_WIDTH - 160;
    int y_offset = 70;
-   epaper.drawRect(x_offset, y_offset - 50, 80, 30, color);
-   epaper.drawRect(x_offset, y_offset - 50, 81, 31, color);
-   epaper.drawRect(x_offset +1, y_offset - 51, 80, 30, color);
-   epaper.drawRect(x_offset +80, y_offset - 41, 10, 12, color);
-   epaper.drawRect(x_offset +81, y_offset - 42, 10, 12, color);
-   epaper.fillRect(x_offset +1, y_offset - 49, (batt_level*0.8)-1, 28, 0xA); // bar
+   epaper->drawRect(x_offset, y_offset - 50, 80, 30, color);
+   epaper->drawRect(x_offset, y_offset - 50, 81, 31, color);
+   epaper->drawRect(x_offset +1, y_offset - 51, 80, 30, color);
+   epaper->drawRect(x_offset +80, y_offset - 41, 10, 12, color);
+   epaper->drawRect(x_offset +81, y_offset - 42, 10, 12, color);
+   epaper->fillRect(x_offset +1, y_offset - 49, (batt_level*0.8)-1, 28, 0xA); // bar
 }
 
 void scd_read()
@@ -1345,7 +1243,7 @@ void scd_read()
     }
 
     // Start Measurement
-    led_blink_start(5, 5, 5, 1000);
+    //led_blink_start(5, 5, 5, 1000);
     error = scd4x_start_periodic_measurement();
     if (error)
     {
@@ -1370,7 +1268,7 @@ void scd_read()
         if (data_ready_flag)
         {
             measure_taken = true;
-            led_blink_stop();
+            //led_blink_stop();
             break;
         }
     }
@@ -1413,8 +1311,8 @@ void scd_read()
 
         cursor_x = EPD_WIDTH - 300;
         scd_render_h(hum, cursor_x, cursor_y);
-        //epaper.loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
-        epaper.fullUpdate(true, false);
+        //epaper->loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
+        epaper->fullUpdate(true, false);
     }
 
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -1460,41 +1358,17 @@ void app_main()
     gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 1);
     // Configure Dotstar LED
-    led_strip_handle_t led_strip = led_configure();
-    ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
+    //led_strip_handle_t led_strip = led_configure();
+    //ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
 
-    printf("RTC OTA version %.2f\n", firmware_version);
+    printf("RTC OTA C5 version %.2f (No ADC)\n", firmware_version);
+    epaper = new FASTEPD();
 
-    #ifdef ADC_VOLTAGE_READ
-//-------------ADC1 Init---------------//
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
-
-    output_buffer = (char*)heap_caps_malloc(MAX_HTTP_OUTPUT_BUFFER, MALLOC_CAP_SPIRAM);
-  
-    if (output_buffer == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for output buffer");
-        return;
-    }
-
-    //-------------ADC1 Config---------------//
-    adc_oneshot_chan_cfg_t config = {
-        .atten = ADC_ATTEN,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC2_CHANNEL, &config));
-
-    //-------------ADC1 Calibration Init---------------//
-    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC2_CHANNEL, ADC_ATTEN, &adc1_cali_chan0_handle);
-
-    #endif
-
+    printf("new FASTEPD() instantiated\n");
     // Configure power state pin as input
     gpio_config_t power_conf = {};
     power_conf.mode = GPIO_MODE_INPUT;
-    power_conf.pin_bit_mask = (1ULL << POWER_STATE_PIN);
+    //power_conf.pin_bit_mask = (1ULL << POWER_STATE_PIN);
     power_conf.intr_type = GPIO_INTR_DISABLE;
     power_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     power_conf.pull_up_en = GPIO_PULLUP_ENABLE;
@@ -1503,11 +1377,11 @@ void app_main()
     esp_err_t err;
     // WiFi log level
     esp_log_level_set("wifi", ESP_LOG_ERROR);
-    epaper.initPanel(BB_PANEL_SENSORIA_C5);
-    epaper.setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
-    epaper.setRotation(180);
+    epaper->initPanel(BB_PANEL_SENSORIA_C5);
+    epaper->setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
+    epaper->setRotation(180);
     // 4 bit per pixel: 16 grays mode
-    epaper.setMode(BB_MODE_4BPP);
+    epaper->setMode(BB_MODE_4BPP);
     int bgcolor = 0xF;
     int fgcolor = 0;
     #if DARKMODE
@@ -1515,9 +1389,9 @@ void app_main()
         fgcolor = 0xF;
     #endif
 
-    epaper.fillScreen(bgcolor);
-    epaper.setTextColor(fgcolor);
-    fb = epaper.currentBuffer();
+    epaper->fillScreen(bgcolor);
+    epaper->setTextColor(fgcolor);
+    fb = epaper->currentBuffer();
 
     esp_rmaker_console_init();
 

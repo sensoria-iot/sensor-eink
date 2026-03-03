@@ -6,7 +6,7 @@
 #include "freertos/FreeRTOS.h"
 
 // DOTSTAR Led config
-#define LED_STRIP_GPIO_PIN  38
+#define LED_STRIP_GPIO_PIN  0
 // 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
 #define LED_STRIP_RMT_RES_HZ  (10 * 1000 * 1000)
 #define LED_STRIP_LED_COUNT 1

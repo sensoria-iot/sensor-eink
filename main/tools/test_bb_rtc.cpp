@@ -1,3 +1,4 @@
+#warning "This is just an bb_rtc test, not the sensoria firmware"
 #include "../config.h"
 #include "i2c_bus.h"
 

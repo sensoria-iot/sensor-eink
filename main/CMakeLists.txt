@@ -12,7 +12,7 @@ set(app_sources "CO2-read/led_controller.c"
 #set(app_sources "tools/test_bb_rtc.cpp")
 #set(app_sources "tools/test_bq27426.cpp")
 # Test only SCD40
-set(app_sources "historic/test_scd40.cpp")
+#set(app_sources "historic/test_scd40.cpp")
 
 # 4 new small white PCB C3 
 set(app_requires  

@@ -1,3 +1,4 @@
+#warning "This is just an SCD40 test, not the sensoria firmware"
 // Edit your API setup and general configuration options:
 #include "../config.h"
 
@@ -275,9 +276,9 @@ void scd_read()
         scd_render_h(hum, cursor_x, cursor_y);
 
         read_batt_level();
-        logo_sensoria(EPD_WIDTH/2 +50, 300);
+        //logo_sensoria(EPD_WIDTH/2 +50, 300);
         //epaper.loadG5Image(rainmaker, EPD_WIDTH-320, 50, 0x0, 0xF);
-        epaper.fullUpdate(true, false);
+        //epaper.fullUpdate(true, false);
     }
 
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -285,7 +286,7 @@ void scd_read()
     scd4x_power_down();
     sensirion_i2c_hal_free();
 
-     deep_sleep();
+    deep_sleep();
 }
 
 
@@ -293,23 +294,23 @@ void app_main()
 {
     esp_err_t err;
     // WiFi log level
-    esp_log_level_set("wifi", ESP_LOG_ERROR);
-    epaper.initPanel(BB_PANEL_V7_RAW);
-    epaper.setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
-    epaper.setRotation(180);
-    // 4 bit per pixel: 16 grays mode
-    epaper.setMode(BB_MODE_4BPP);
-    int bgcolor = 0xF;
-    int fgcolor = 0;
-    #if DARKMODE
-        bgcolor = 0;
-        fgcolor = 0xF;
-    #endif
+    // esp_log_level_set("wifi", ESP_LOG_ERROR);
+    // epaper.initPanel(BB_PANEL_V7_RAW);
+    // epaper.setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
+    // epaper.setRotation(180);
+    // // 4 bit per pixel: 16 grays mode
+    // epaper.setMode(BB_MODE_4BPP);
+    // int bgcolor = 0xF;
+    // int fgcolor = 0;
+    // #if DARKMODE
+    //     bgcolor = 0;
+    //     fgcolor = 0xF;
+    // #endif
 
-    epaper.fillScreen(bgcolor);
-    epaper.setTextColor(fgcolor);
-    fb = epaper.currentBuffer();
-
+    // epaper.fillScreen(bgcolor);
+    // epaper.setTextColor(fgcolor);
+    // fb = epaper.currentBuffer();
+    
     /* Initialize NVS. */
     err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -329,9 +330,7 @@ void app_main()
     // Set new value
     nvs_set_i16(nvs_h, "boots", nvs_boots);
     nvs_close(nvs_h);
-
+    printf("NVS initialized\n");
     // We read sensor here
     scd_read();
-   
 }
-
