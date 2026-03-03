@@ -7,8 +7,8 @@ set(app_sources "CO2-read/led_controller.c"
                 "CO2-read/S3-OTA-fast-1.4.cpp"
                 )
 # Only test I2C. RTC address is 0x51
-set(app_sources "tools/i2cscan.c")
-
+#set(app_sources "tools/i2cscan.c")
+set(app_sources "tools/test_bb_rtc.cpp")
 # 4 new small white PCB C3 
 set(app_requires  
                  i2c_bus
