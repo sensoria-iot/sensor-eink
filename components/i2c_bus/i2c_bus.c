@@ -12,7 +12,7 @@ typedef struct {
     i2c_master_dev_handle_t dev;
 } dev_entry_t;
 
-static dev_entry_t s_devs[12];
+static dev_entry_t s_devs[128];
 static int s_dev_count = 0;
 
 esp_err_t i2c_bus_init(int sda_gpio, int scl_gpio)
