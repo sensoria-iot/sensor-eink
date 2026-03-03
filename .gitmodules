@@ -1,6 +1,3 @@
-[submodule "components/scd40"]
-	path = components/scd40
-	url = https://github.com/timbuntu/esp-idf-scd4x.git
 [submodule "components/BQ27426_idf"]
 	path = components/BQ27426_idf
 	url = https://github.com/martinberlin/BQ27426_idf.git
@@ -10,3 +7,6 @@
 [submodule "components/bb_rtc"]
 	path = components/bb_rtc
 	url = https://github.com/martinberlin/bb_rtc_i2cmaster.git
+[submodule "components/scd40"]
+	path = components/scd40
+	url = https://github.com/martinberlin/scd4x-idf-i2cmaster.git
