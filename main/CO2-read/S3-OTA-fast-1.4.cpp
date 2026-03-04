@@ -5,9 +5,10 @@
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
-// IO Definitions
+// IO Definitions. This is the pin that keeps power ON:
 #define POWER_HOLD_PIN    1
-float firmware_version = 1.47;
+
+float firmware_version = 1.0;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -179,6 +180,10 @@ void deep_sleep()
 {
     // TURN ALL OFF
     gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 0);
+    printf("5 seconds wait before OFF\n");
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    
+    esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
 /**
@@ -1363,16 +1368,6 @@ void app_main()
 
     printf("RTC OTA C5 version %.2f (No ADC)\n", firmware_version);
     epaper = new FASTEPD();
-
-    printf("new FASTEPD() instantiated\n");
-    // Configure power state pin as input
-    gpio_config_t power_conf = {};
-    power_conf.mode = GPIO_MODE_INPUT;
-    //power_conf.pin_bit_mask = (1ULL << POWER_STATE_PIN);
-    power_conf.intr_type = GPIO_INTR_DISABLE;
-    power_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    power_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    gpio_config(&power_conf);
 
     esp_err_t err;
     // WiFi log level
