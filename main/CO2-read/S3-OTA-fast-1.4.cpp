@@ -21,8 +21,8 @@ uint8_t alarm_min = 0;
 #include "FastEPD.cpp"
 static FASTEPD *epaper = nullptr;
 
-// Dotstar 2812 LED in the strip
-#include "led_controller.h"
+// Dotstar 2812 LED in the strip. TO be replaced by RGB LED with 3 IOs going to PCA9535 
+//#include "led_controller.h"
 
 // BQ27426 fuel gauge (For next revision)
 #include "TiFuelGauge.h"
@@ -177,12 +177,8 @@ extern "C"
 
 void deep_sleep()
 {
-    printf("5 seconds wait before OFF\n");
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
     // TURN ALL OFF
     gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 0);
-    ESP_LOGI(pcTaskGetName(0), "DEEP_SLEEP_MINUTES: %d mins to wake-up", nvs_minutes_till_refresh);
-    esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
 /**
@@ -638,10 +634,10 @@ void parse_json(const char* json_string)
         res_alert_v = alert_v->valueint;
     }
     if (cJSON_IsString(alert_tipo)) {
-        snprintf(res_alert_tipo, strlen(alert_tipo->valuestring), "%s", alert_tipo->valuestring);
+        snprintf(res_alert_tipo, sizeof(res_alert_tipo), "%s", alert_tipo->valuestring);
     }
     if (cJSON_IsString(message)) {
-       snprintf(res_message, strlen(message->valuestring), "%s", message->valuestring);
+       snprintf(res_message, sizeof(res_message), "%s", message->valuestring);
     }
     // Clean up
     cJSON_Delete(root);
@@ -926,7 +922,6 @@ void send_data_to_api()
     // Clean up
     esp_http_client_cleanup(client);
     free(local_response_buffer);
-
 }
 
 static void flush_str(char *buf, void *priv)
@@ -955,7 +950,12 @@ uint16_t generateRandom(uint16_t max)
     return 0;
 }
 
-// esp_qrcode_config_t
+/**
+ * TODO:
+ * Correct approach: defer QR drawing to your app task
+ * Check COPILOT feedback
+ * Keep the BLE event handler very light: copy the string, notify a worker task, and return.
+ */
 void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
     int size = esp_qrcode_get_size(qrcode);
     int sq = 5;
@@ -1008,7 +1008,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGI(TAG, "EVENT RainMaker Initialised.");
                 break;
             case RMAKER_EVENT_CLAIM_STARTED:
-                led_blink_start(0, 0, 50, 500);
+                //led_blink_start(0, 0, 50, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Started.");
                 epaper->fillScreen(16);
                 epaper->fullUpdate(CLEAR_FAST, false);
@@ -1021,11 +1021,11 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 vTaskDelay(pdMS_TO_TICKS(300));
                 break;
             case RMAKER_EVENT_USER_NODE_MAPPING_DONE:
-                led_blink_start(50, 0, 0, 500);
+                //led_blink_start(50, 0, 0, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_CLAIM_FAILED:
-                led_blink_start(50, 0, 0, 500);
+                //led_blink_start(50, 0, 0, 500);
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_LOCAL_CTRL_STARTED:
@@ -1068,14 +1068,14 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == APP_NETWORK_EVENT) {
         switch (event_id) {
             case APP_NETWORK_EVENT_QR_DISPLAY: {
-                led_blink_start(0, 0, 50, 500);
+                //led_blink_start(0, 0, 50, 500);
                 ESP_LOGI("NETWORK_EVENT", "Provisioning QR : %s", (char *)event_data);
-                esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
-                esp_qrcode_generate(&cfg_qr, (const char *)event_data);
+                //esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
+                //esp_qrcode_generate(&cfg_qr, (const char *)event_data);
                 break;
                 }
             case APP_NETWORK_EVENT_PROV_TIMEOUT: {
-                 led_blink_start(50, 0, 0, 500);
+                 //led_blink_start(50, 0, 0, 500);
                  ESP_LOGI("NETWORK_EVENT", "Provisioning timed-out");
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
@@ -1091,7 +1091,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == RMAKER_OTA_EVENT) {
         switch(event_id) {
             case RMAKER_OTA_EVENT_STARTING:
-                led_blink_start(0, 50, 0, 500);
+                //led_blink_start(0, 50, 0, 500);
                 ESP_LOGI(TAG, "Starting OTA.");
                 break;
             case RMAKER_OTA_EVENT_IN_PROGRESS:
@@ -1471,7 +1471,7 @@ void app_main()
 
     /* Create a device and add the relevant parameters to it */
     // esp_rmaker_device_t *
-    temp_sensor_device = esp_rmaker_temp_sensor_device_create("Temperature Sensor", NULL, tem);
+    temp_sensor_device = esp_rmaker_temp_sensor_device_create("Sensoria C5", NULL, tem);
 
     esp_rmaker_device_add_cb(temp_sensor_device, write_cb, NULL);
     // Customized slider to Reset WiFi
@@ -1531,7 +1531,6 @@ void app_main()
 
     build_request_json();
     send_data_to_api();
-
     deep_sleep();
 }
 
