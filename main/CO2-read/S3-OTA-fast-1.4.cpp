@@ -2,13 +2,14 @@
 #include "../config.h"
 // No more legacy I2C driver
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
 // IO Definitions. This is the pin that keeps power ON:
 #define POWER_HOLD_PIN    1
 
-float firmware_version = 1.0;
+float firmware_version = 1.47;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -1448,10 +1449,17 @@ void app_main()
     /* Initialize the ESP RainMaker Agent.
      * Note that this should be called after app_network_init() but before app_network_start()
      * */
+
+    ESP_LOGI("HEAP", "free heap=%" PRIu32 ", min free heap=%" PRIu32,
+         esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
+    ESP_LOGI("HEAP", "free internal=%" PRIu32 ", min internal=%" PRIu32,
+         heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+         heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+
     esp_rmaker_config_t rainmaker_cfg = {
         .enable_time_sync = false,
     };
-    esp_rmaker_node_t *node = esp_rmaker_node_init(&rainmaker_cfg, "ESP RainMaker Device", "Lightbulb");
+    esp_rmaker_node_t *node = esp_rmaker_node_init(&rainmaker_cfg, "ESP RainMaker Device", "Sensoria");
     if (!node)
     {
         ESP_LOGE(TAG, "Could not initialise node. Aborting!!!");
@@ -1483,15 +1491,17 @@ void app_main()
     /* Enable timezone service which will be require for setting appropriate timezone
      * from the phone apps for scheduling to work correctly.
      * For more information on the various ways of setting timezone, please check
-     * https://rainmaker.espressif.com/docs/time-service.html.
+     * https://rainmaker.espressif.com/docs/time-service.html
+     * 
+     * LET's save power on these
      */
-    esp_rmaker_timezone_service_enable();
+    //esp_rmaker_timezone_service_enable();
 
     /* Enable scheduling. */
-    esp_rmaker_schedule_enable();
+    //esp_rmaker_schedule_enable();
 
     /* Enable Scenes */
-    esp_rmaker_scenes_enable();
+    //esp_rmaker_scenes_enable();
 
     /* Start the ESP RainMaker Agent */
     esp_rmaker_start();
