@@ -9,7 +9,7 @@ size_t sensor_id_size;
 // IO Definitions. This is the pin that keeps power ON:
 #define POWER_HOLD_PIN    1
 
-float firmware_version = 1.47;
+float firmware_version = 1.0;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -380,7 +380,7 @@ static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_pa
 bool check_firmware_update(char* update_url, size_t url_size)
 {
     char url[256];
-    snprintf(url, sizeof(url), "http://%s/api/firmware/S3/%s", WEB_HOST, nvs_sensor_id);
+    snprintf(url, sizeof(url), "http://%s/api/firmware/C5/%s", WEB_HOST, nvs_sensor_id);
     
     ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
     

@@ -1,6 +1,6 @@
 // API CONFIG & General settings
 // Please apply for an API Key in sensoria.cat
-#define SENSOR_ID "6f46d584-fb4e-4141-af7a-5033dbd80f07"
+#define SENSOR_ID ""
 //#define MESSAGE_SCAN_QR1 "1. Baje el App ESP-Rainmaker"
 //#define MESSAGE_SCAN_QR2 "2. Escanee el QR-CODE"
 #define MESSAGE_SCAN_QR1 "1 Download ESP-Rainmaker app"
