@@ -177,14 +177,22 @@ extern "C"
     void app_main();
 }
 
+static inline void power_hold_drive(bool on)
+{
+    gpio_reset_pin((gpio_num_t)POWER_HOLD_PIN);
+    gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
+    // choose pull that matches your transistor gate network
+    gpio_set_pull_mode((gpio_num_t)POWER_HOLD_PIN, GPIO_PULLDOWN_ONLY);
+    gpio_set_level((gpio_num_t)POWER_HOLD_PIN, on ? 1 : 0);
+}
+
 void deep_sleep()
 {
     // TURN ALL OFF
-    gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 0);
     printf("5 seconds wait before OFF\n");
     vTaskDelay(5000 / portTICK_PERIOD_MS);
-    
-    esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
+    power_hold_drive(false);
+    //esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
 /**
@@ -1360,9 +1368,7 @@ void build_request_json() {
 void app_main()
 {
     // IMPORTANT: Set power hold HIGH immediately
-    gpio_reset_pin((gpio_num_t)POWER_HOLD_PIN);
-    gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level((gpio_num_t)POWER_HOLD_PIN, 1);
+    power_hold_drive(true);
     // Configure Dotstar LED
     //led_strip_handle_t led_strip = led_configure();
     //ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
