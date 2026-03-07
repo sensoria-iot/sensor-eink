@@ -1508,7 +1508,7 @@ void app_main()
 
     /* Enable Scenes */
     //esp_rmaker_scenes_enable();
-
+ 
     /* Start the ESP RainMaker Agent */
     esp_rmaker_start();
 
