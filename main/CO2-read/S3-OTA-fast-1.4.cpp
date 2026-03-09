@@ -189,9 +189,10 @@ static inline void power_hold_drive(bool on)
 void deep_sleep()
 {
     // TURN ALL OFF
-    printf("5 seconds wait before OFF\n");
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    printf("2 seconds wait before OFF\n");
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
     power_hold_drive(false);
+    printf("Powering OFF\n");
     //esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
 }
 
@@ -1433,7 +1434,8 @@ void app_main()
     scd_read();
 
     printf("Read RTC\n");
-    int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO); // Do not init, already done. CONFIG_SDA_GPIO, CONFIG_SCL_GPIO
+    int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO, true, 100000); // bWire=true
+    
     if (rc != RTC_SUCCESS) {
         printf("Error in rtc.init() I2C is already initialized\n");
         /* while (1) {
