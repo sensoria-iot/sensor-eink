@@ -1032,8 +1032,8 @@ static void qr_draw_task(void *arg)
         snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
         epaper->drawString(textbuffer, 462, 360);
 
-        BB_RECT box{ .x = 50, .y = 50, .w = 800, .h = 360 };
-        epaper->fullUpdate(false, false, &box);
+        BB_RECT box{ .x = 50, .y = 50, .w = EPD_WIDTH-60, .h = 360 };
+        epaper->fullUpdate(false, true, &box);
     }
 }
 
