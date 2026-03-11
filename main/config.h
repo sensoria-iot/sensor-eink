@@ -20,8 +20,11 @@ const char * not_trustworthy = "NOT TRUSTWORTHY";
 #define EPD_HEIGHT  720
 
 // I2C
-#define CONFIG_SDA_GPIO 7
-#define CONFIG_SCL_GPIO 6
+#define CONFIG_SDA_GPIO 7 //C5
+#define CONFIG_SCL_GPIO 6 //C5
+// #define CONFIG_SDA_GPIO 39
+// #define CONFIG_SCL_GPIO 40
+
 // Station will refresh every:
 #define DEEP_SLEEP_MINUTES 30
 // INTERNALS
