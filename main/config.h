@@ -1,6 +1,6 @@
 // API CONFIG & General settings
 // Please apply for an API Key in sensoria.cat
-#define SENSOR_ID ""
+#define SENSOR_ID "6f46d584-fb4e-4141-af7a-5033dbd80f0"
 //#define MESSAGE_SCAN_QR1 "1. Baje el App ESP-Rainmaker"
 //#define MESSAGE_SCAN_QR2 "2. Escanee el QR-CODE"
 #define MESSAGE_SCAN_QR1 "1 Download ESP-Rainmaker app"
@@ -20,8 +20,11 @@ const char * not_trustworthy = "NOT TRUSTWORTHY";
 #define EPD_HEIGHT  720
 
 // I2C
-#define CONFIG_SDA_GPIO 7
-#define CONFIG_SCL_GPIO 6
+#define CONFIG_SDA_GPIO 7 //C5
+#define CONFIG_SCL_GPIO 6 //C5
+// #define CONFIG_SDA_GPIO 39
+// #define CONFIG_SCL_GPIO 40
+
 // Station will refresh every:
 #define DEEP_SLEEP_MINUTES 30
 // INTERNALS

@@ -62,12 +62,22 @@ static const char *TAG = "CO2_ST";
 #include <qrcode.h>
 
 #define DARKMODE false
-
+// QR handling
 #define ESP_QRCODE_SENSORIA() (esp_qrcode_config_t) { \
     .display_func = esp_qrcode_print_eink, \
     .max_qrcode_version = 10, \
     .qrcode_ecc_level = ESP_QRCODE_ECC_LOW, \
 }
+static TaskHandle_t qr_draw_task_handle = nullptr;
+
+static struct {
+    int size;
+    // max version you configured is 10 => max module size is 57.
+    // allocate enough for 57x57. store 0/1 per module.
+    uint8_t modules[57 * 57];
+    volatile bool pending;
+} g_qr = {};
+// end of QR
 
 bool ready_to_measure = false;
 bool measure_taken = false;
@@ -966,52 +976,91 @@ uint16_t generateRandom(uint16_t max)
 }
 
 /**
- * TODO:
- * Correct approach: defer QR drawing to your app task
- * Check COPILOT feedback
+ * Task that writes the QR when callback is set
+ */
+static void qr_draw_task(void *arg)
+{
+    while (true) {
+        // Wait until callback notifies
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        if (!g_qr.pending) continue;
+        g_qr.pending = false;
+
+        // Now it is safe to log and draw (normal task context)
+        ESP_LOGI(TAG, "Drawing QR (size=%d)", g_qr.size);
+
+        if (!epaper) {
+            ESP_LOGE(TAG, "epaper is null, cannot draw QR");
+            continue;
+        }
+
+        // Defensive: ensure strings exist
+        const char *id = (nvs_sensor_id) ? nvs_sensor_id : "NO_ID";
+
+        const int size = g_qr.size;
+        const int sq = 5;
+        const int x_offset = EPD_WIDTH - 260;
+        const int y_offset = 90;
+        const int border = 2;
+
+        epaper->fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
+
+        for (int y = -2; y < size + border; y++) {
+            for (int x = -2; x < size + border; x++) {
+                uint8_t on = 0;
+                if (x >= 0 && x < size && y >= 0 && y < size) {
+                    on = g_qr.modules[y * size + x];
+                }
+                uint8_t color = on ? 0x0 : 0xF; // pick black modules (depending on your palette)
+                epaper->fillRect((x * sq) + x_offset, (y * sq) + y_offset, sq, sq, color);
+            }
+        }
+
+        epaper->setFont(ubuntu20);
+        char textbuffer[64];
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR1);
+        epaper->drawString(textbuffer, 430, 110);
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
+        epaper->drawString(textbuffer, 430, 160);
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s", id);
+        epaper->drawString(textbuffer, 462, 310);
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
+        epaper->drawString(textbuffer, 462, 360);
+
+        BB_RECT box{ .x = 50, .y = 50, .w = 800, .h = 360 };
+        epaper->fullUpdate(false, false, &box);
+    }
+}
+
+/**
  * Keep the BLE event handler very light: copy the string, notify a worker task, and return.
  */
-void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode) {
+void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode)
+{
+    if (!qrcode) return;
+
     int size = esp_qrcode_get_size(qrcode);
-    int sq = 5;
-    uint8_t color;
-    int x_offset = EPD_WIDTH -260;
-    int y_offset = 90;
-    int border = 2;
+    if (size <= 0 || size > 57) return;
 
-    epaper->fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
-    for (int y = -2; y < size + border; y ++) {
-        for (int x = -2; x < size + border; x ++) {
-            color = esp_qrcode_get_module(qrcode, x, y);
-            if (color) { color = 0xF; }
-            
-            epaper->fillRect((x*sq)+x_offset, (y*sq)+y_offset, sq, sq, color);
-            }
+    // Copy module data quickly (no drawing, no printf)
+    g_qr.size = size;
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            g_qr.modules[y * size + x] = esp_qrcode_get_module(qrcode, x, y) ? 1 : 0;
+        }
     }
-    
-    epaper->setFont(ubuntu20);
-    char textbuffer[40];
-    snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR1);
-    epaper->drawString(textbuffer, 430, 110);
-    // Reset textbuffer to empty string:
-    textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
-    epaper->drawString(textbuffer, 430, 160);
 
-    textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "%s", nvs_sensor_id);
-    epaper->drawString(textbuffer, 462, 310);
+    g_qr.pending = true;
 
-    textbuffer[0] = '\0';
-    snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
-    epaper->drawString(textbuffer, 462, 360);
-    
-    BB_RECT box;
-    box.x = 50;
-    box.y = 50;
-    box.w = 800;
-    box.h = 360;
-    epaper->fullUpdate(false, false, &box);
+    // Notify worker task (ISR-safe not required here, but keep it simple)
+    if (qr_draw_task_handle) {
+        xTaskNotifyGive(qr_draw_task_handle);
+    }
 }
 
 /* Event handler for catching RainMaker events */
@@ -1085,8 +1134,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             case APP_NETWORK_EVENT_QR_DISPLAY: {
                 //led_blink_start(0, 0, 50, 500);
                 ESP_LOGI("NETWORK_EVENT", "Provisioning QR : %s", (char *)event_data);
-                //esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
-                //esp_qrcode_generate(&cfg_qr, (const char *)event_data);
+                esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
+                esp_qrcode_generate(&cfg_qr, (const char *)event_data);
                 break;
                 }
             case APP_NETWORK_EVENT_PROV_TIMEOUT: {
@@ -1522,6 +1571,8 @@ void app_main()
         nvs_close(nvs_h);
       vTaskDelay(pdMS_TO_TICKS(10000));
       return;
+      #else
+      xTaskCreate(qr_draw_task, "qr_draw", 8192, nullptr, 5, &qr_draw_task_handle);
     #endif
     
     
