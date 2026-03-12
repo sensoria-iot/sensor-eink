@@ -289,7 +289,8 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
                 copy_len = MIN(evt->data_len, (MAX_HTTP_OUTPUT_BUFFER - output_len));
                 if (copy_len) {
                     ESP_LOGI(TAG, "Copying %d bytes to user_data at offset %d", copy_len, output_len);
-                    memcpy(evt->user_data + output_len, evt->data, copy_len);
+                    // C++ forbids pointer arithmetic on void*
+                    memcpy((uint8_t *)evt->user_data + output_len, evt->data, copy_len);
                 }
                 output_len += copy_len;
                 ESP_LOGI(TAG, "Total output_len now: %d", output_len);
@@ -299,7 +300,7 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
                 int content_len = esp_http_client_get_content_length(evt->client);
                 copy_len = MIN(evt->data_len, (content_len - output_len));
                 if (copy_len) {
-                    memcpy(output_buffer + output_len, evt->data, copy_len);
+                    memcpy((uint8_t *)output_buffer + output_len, evt->data, copy_len);
                 }
                 output_len += copy_len;
             }
@@ -787,7 +788,7 @@ void draw_response_analisis(int tipo) {
             }  else {
                 snprintf(textbuffer, sizeof(textbuffer), "NEXT PREDICTED %s ALERT:", res_alert_tipo);
                 epaper->drawString(textbuffer, gridx2, gridy2+50);
-                char * unit_type = "°C";
+                const char * unit_type = "°C";
                 if (strcmp(res_alert_tipo, "CO2") == 0) {
                     unit_type = "ppm";
                 }
@@ -1098,7 +1099,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGI(TAG, "EVENT Local Control Stopped.");
                 break;
             default:
-                ESP_LOGW(TAG, "Unhandled RainMaker Event: %"PRIi32, event_id);
+                ESP_LOGW(TAG, "Unhandled RainMaker Event: %" PRIi32, event_id);
         }
     } else if (event_base == RMAKER_COMMON_EVENT) {
         switch (event_id) {
@@ -1126,7 +1127,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
                 
             default:
-                ESP_LOGW(TAG, "Unhandled RainMaker Common Event: %"PRIi32, event_id);
+                ESP_LOGW(TAG, "Unhandled RainMaker Common Event: %" PRIi32, event_id);
         }
     } else if (event_base == APP_NETWORK_EVENT) {
         switch (event_id) {
@@ -1146,9 +1147,12 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper->drawString("< Press RESET and connect your device to USB-C", 10, 160);
                  epaper->drawString("The LED signal should flash BLUE when it's ready >", 10, 210);
                  epaper->fullUpdate();
+                 vTaskDelay(pdMS_TO_TICKS(500));
+                 schedule_rtc_wakeup_minutes(3);
+                 break;
             }
             default:
-                ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %"PRIi32, event_id);
+                ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %" PRIi32, event_id);
                 break;
         }
     } else if (event_base == RMAKER_OTA_EVENT) {
@@ -1176,7 +1180,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGI(TAG, "Firmware image downloaded. Please reboot your device to apply the upgrade.");
                 break;
             default:
-                ESP_LOGW(TAG, "Unhandled OTA Event: %"PRIi32, event_id);
+                ESP_LOGW(TAG, "Unhandled OTA Event: %" PRIi32, event_id);
                 break;
         }
     } else {
