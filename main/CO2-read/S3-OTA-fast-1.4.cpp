@@ -672,7 +672,6 @@ void parse_json(const char* json_string)
     //aTime.tm_hour = 15; //DEBUG
     //aTime.tm_min = 50; //DEBUG
     
-    rtc.clearAlarms();
     // For now set this only on DAY 5 of the week
     if (rtc_day != aTime.tm_mday) {
         printf("RTC setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
@@ -782,7 +781,7 @@ void draw_response_analisis(int tipo) {
         epaper->drawString("MODEL CONFIDENCE", gridx1, gridy2+50);
         textbuffer[0] = '\0';
         if (res_confiable_prediccion) {
-            if (strcmp(res_alert_tipo, "NON") == 0) {
+            if (strcmp(res_alert_tipo, "NONE") == 0) {
                 snprintf(textbuffer, sizeof(textbuffer), "NO MORE ALERTS TODAY");
                 epaper->drawString(textbuffer, gridx2, gridy2+50);
             }  else {
@@ -1496,7 +1495,8 @@ void app_main()
         rtc_day = RTCTime.tm_mday;
         printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec, RTCTime.tm_mday, RTCTime.tm_mon, RTCTime.tm_wday);
     }
-    
+    rtc.clearAlarms();
+
     /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
     app_network_init();
 
