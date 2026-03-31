@@ -3,11 +3,11 @@
 // No more legacy I2C driver
 #include "esp_mac.h"
 #include "esp_heap_caps.h"
+// INTERRUPT
+#define RTC_INT_GPIO GPIO_NUM_1
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
-// IO Definitions. This is the pin that keeps power ON:
-#define POWER_HOLD_PIN    1
 
 float firmware_version = 1.0;
 
@@ -187,23 +187,25 @@ extern "C"
     void app_main();
 }
 
-static inline void power_hold_drive(bool on)
-{
-    gpio_reset_pin((gpio_num_t)POWER_HOLD_PIN);
-    gpio_set_direction((gpio_num_t)POWER_HOLD_PIN, GPIO_MODE_OUTPUT);
-    // choose pull that matches your transistor gate network
-    gpio_set_pull_mode((gpio_num_t)POWER_HOLD_PIN, GPIO_PULLDOWN_ONLY);
-    gpio_set_level((gpio_num_t)POWER_HOLD_PIN, on ? 1 : 0);
-}
-
 void deep_sleep()
 {
     // TURN ALL OFF
     printf("2 seconds wait before OFF\n");
     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    power_hold_drive(false);
-    printf("Powering OFF\n");
-    //esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
+    //power_hold_drive(false);
+    printf("Powering OFF. Waking up from IO1 (Low on RTC alarm)\n");
+    esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
+}
+
+static void rtc_int_gpio_init()
+{
+    gpio_config_t io = {};
+    io.intr_type = GPIO_INTR_DISABLE;
+    io.mode = GPIO_MODE_INPUT;
+    io.pin_bit_mask = 1ULL << RTC_INT_GPIO;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;   // you already have external 10k pull-up
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    ESP_ERROR_CHECK(gpio_config(&io));
 }
 
 /**
@@ -552,6 +554,75 @@ void check_and_update_firmware()
     }
 }
 
+static void rv3032_dump_regs(uint32_t speed_hz = 100000)
+{
+    const char *T = "RV3032_DUMP";
+    i2c_master_dev_handle_t dev = i2c_bus_get_dev(0x51, speed_hz);
+    if (!dev) {
+        ESP_LOGE(T, "i2c_bus_get_dev(0x51, %" PRIu32 ") failed", speed_hz);
+        return;
+    }
+
+    auto rd = [&](uint8_t reg, uint8_t *out, size_t len) -> esp_err_t {
+        return i2c_master_transmit_receive(dev, &reg, 1, out, len, 1000);
+    };
+
+    uint8_t st = 0, c1 = 0, c2 = 0, c3 = 0;
+    uint8_t alarm[4] = {0};
+
+    // Status and controls
+    esp_err_t e1 = rd(0x0D, &st, 1);     // Status
+    esp_err_t e2 = rd(0x10, &c1, 1);     // Control 1
+    esp_err_t e3 = rd(0x11, &c2, 1);     // Control 2
+    esp_err_t e4 = rd(0x12, &c3, 1);     // Control 3 (if implemented by your chip rev; ok if it reads)
+
+    // Alarm registers block: 0x08..0x0B
+    esp_err_t e5 = rd(0x08, alarm, 4);
+
+    ESP_LOGI(T, "read status: 0x0D=%02X (err=%s)", st, esp_err_to_name(e1));
+    ESP_LOGI(T, "read ctrl:   0x10=%02X 0x11=%02X 0x12=%02X (errs=%s,%s,%s)",
+             c1, c2, c3, esp_err_to_name(e2), esp_err_to_name(e3), esp_err_to_name(e4));
+    ESP_LOGI(T, "read alarm:  0x08..0x0B = %02X %02X %02X %02X (err=%s)",
+             alarm[0], alarm[1], alarm[2], alarm[3], esp_err_to_name(e5));
+
+    // Optional: read current time regs too (helps catch “time not ticking” / mismatch)
+    uint8_t t[7] = {0};
+    esp_err_t e6 = rd(0x01, t, 7); // seconds..year (per your bb_rtc getTime RV3032 branch)
+    ESP_LOGI(T, "read time:   0x01..0x07 = %02X %02X %02X %02X %02X %02X %02X (err=%s)",
+             t[0], t[1], t[2], t[3], t[4], t[5], t[6], esp_err_to_name(e6));
+}
+static void rv3032_force_int_enable()
+{
+    i2c_master_dev_handle_t dev = i2c_bus_get_dev(0x51, 100000);
+    if (!dev) return;
+
+    auto wr = [&](uint8_t reg, uint8_t val) {
+        uint8_t b[2] = {reg, val};
+        ESP_ERROR_CHECK(i2c_master_transmit(dev, b, 2, 1000));
+    };
+    auto rd1 = [&](uint8_t reg) -> uint8_t {
+        uint8_t v = 0;
+        ESP_ERROR_CHECK(i2c_master_transmit_receive(dev, &reg, 1, &v, 1, 1000));
+        return v;
+    };
+
+    uint8_t c1 = rd1(0x10);
+    uint8_t c2 = rd1(0x11);
+
+    // Clear any pending flags
+    wr(0x0D, 0x00);
+
+    // Try enabling alarm interrupt without destroying other bits
+    // (Exact bits depend on RV3032 config; this is an experimental “turn it on”)
+    c1 &= (uint8_t)~0x08;      // ensure countdown off (library already does this)
+    wr(0x10, c1);
+
+    c2 |= 0x08;               // library’s intended “time interrupt enable”
+    wr(0x11, c2);
+
+    rv3032_dump_regs();
+}
+
 void parse_json(const char* json_string)
 {
     // Parse the JSON string
@@ -705,6 +776,7 @@ void parse_json(const char* json_string)
         rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
     }
     printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    rv3032_force_int_enable();
 }
 
 /**
@@ -1418,10 +1490,36 @@ void build_request_json() {
         json_gen_str_end(&jstr);
 }
 
+static void log_wakeup_reason()
+{
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    ESP_LOGI(TAG, "Wakeup cause: %d", (int)cause);
+
+    switch (cause)
+    {
+    case ESP_SLEEP_WAKEUP_TIMER:
+        ESP_LOGI(TAG, "EXT1 wakeup deepsleep");
+        break;
+    case ESP_SLEEP_WAKEUP_EXT1: {
+        uint64_t mask = esp_sleep_get_ext1_wakeup_status();
+        ESP_LOGI(TAG, "EXT1 wakeup mask: 0x%llx", (unsigned long long)mask);
+        break;
+        }
+    default:
+        ESP_LOGI(TAG, "Wakeup reason unknown");
+        break;
+    }
+}
+
 void app_main()
 {
+    log_wakeup_reason();
     // IMPORTANT: Set power hold HIGH immediately
-    power_hold_drive(true);
+    //power_hold_drive(true);
+    rtc_int_gpio_init();
+    // Wake up when RTC_INT_GPIO is driven LOW by the RTC
+    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(1ULL << RTC_INT_GPIO, ESP_EXT1_WAKEUP_ANY_LOW));
+
     // Configure Dotstar LED
     //led_strip_handle_t led_strip = led_configure();
     //ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
