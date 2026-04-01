@@ -5,6 +5,12 @@
 #include "esp_heap_caps.h"
 // INTERRUPT
 #define RTC_INT_GPIO GPIO_NUM_1
+// --- Status LED via PCA9535 (through FastEPD external IO) ---
+// PCA9535 mapping used by BitBank-style ext-IO is typically: P0_0..P0_7 => 0..7, P1_0..P1_7 => 8..15
+// C5 schematic: LED_BLUE = IO1_2, LED_GREEN = IO1_3
+#define EXTIO_LED_BLUE   (8+3)  // IO1_3 3 & 2 are swapped in schematics
+#define EXTIO_LED_GREEN  (8+2)  // IO1_2
+
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
@@ -60,32 +66,6 @@ static const char *TAG = "CO2_ST";
 #include <esp_rmaker_common_events.h>
 #include <app_network.h>
 #include <qrcode.h>
-
-#define DARKMODE false
-// QR handling
-#define ESP_QRCODE_SENSORIA() (esp_qrcode_config_t) { \
-    .display_func = esp_qrcode_print_eink, \
-    .max_qrcode_version = 10, \
-    .qrcode_ecc_level = ESP_QRCODE_ECC_LOW, \
-}
-static TaskHandle_t qr_draw_task_handle = nullptr;
-
-static struct {
-    int size;
-    // max version you configured is 10 => max module size is 57.
-    // allocate enough for 57x57. store 0/1 per module.
-    uint8_t modules[57 * 57];
-    volatile bool pending;
-} g_qr = {};
-// end of QR
-
-bool ready_to_measure = false;
-bool measure_taken = false;
-
-uint16_t co2 = 0;
-float tem = 0;
-float hum = 0;
-
 #define DEVICE_PARAM_WIFI_RESET "Turn slider to 100 to reset WiFi"
 #define LOW_BATT_ALERT 20
 #include <math.h>  // roundf
@@ -128,6 +108,36 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 
 // RTC
 #include <bb_rtc.h>
+
+// SCD4x
+#include "scd4x_i2c.h"
+#include "sensirion_common.h"
+#include "sensirion_i2c_hal.h"
+#define DARKMODE false
+// QR handling
+#define ESP_QRCODE_SENSORIA() (esp_qrcode_config_t) { \
+    .display_func = esp_qrcode_print_eink, \
+    .max_qrcode_version = 10, \
+    .qrcode_ecc_level = ESP_QRCODE_ECC_LOW, \
+}
+static TaskHandle_t qr_draw_task_handle = nullptr;
+
+static struct {
+    int size;
+    // max version you configured is 10 => max module size is 57.
+    // allocate enough for 57x57. store 0/1 per module.
+    uint8_t modules[57 * 57];
+    volatile bool pending;
+} g_qr = {};
+// end of QR
+
+bool ready_to_measure = false;
+bool measure_taken = false;
+
+uint16_t co2 = 0;
+float tem = 0;
+float hum = 0;
+
 BBRTC rtc;
 uint8_t rtc_day = 0;
 //#include <app_insights.h>
@@ -167,11 +177,6 @@ char res_alert_tipo[10];
 int res_alert_v = 0;
 char res_message[40];
 
-// SCD4x
-#include "scd4x_i2c.h"
-#include "sensirion_common.h"
-#include "sensirion_i2c_hal.h"
-
 // Flag to know that how many times the device booted
 int16_t nvs_boots = 0;
 // Define the global MAC address variable
@@ -186,6 +191,37 @@ extern "C"
 {
     void app_main();
 }
+
+// LED Management using IO expender (only G & B)
+static inline uint8_t led_level(bool on)
+{
+    return on ? 1 : 0;
+}
+
+static void status_led_init()
+{
+    // Must be called after epaper->initPanel(...) because pfnExtIO is set by the panel/board init.
+    bbepPCA9535PinMode(EXTIO_LED_GREEN, OUTPUT);
+    bbepPCA9535PinMode(EXTIO_LED_BLUE, OUTPUT);
+    //epaper->ioPinMode(EXTIO_LED_BLUE,  BB_EXTIO_WRITE);
+
+    // Off by default
+    bbepPCA9535DigitalWrite(EXTIO_LED_GREEN, led_level(false));
+    bbepPCA9535DigitalWrite(EXTIO_LED_BLUE, led_level(false));
+    //epaper->ioWrite(EXTIO_LED_BLUE,  led_level(false));
+}
+
+static inline void status_led_set(bool green_on, bool blue_on)
+{
+    bbepPCA9535DigitalWrite(EXTIO_LED_GREEN, led_level(green_on));
+    bbepPCA9535DigitalWrite(EXTIO_LED_BLUE, led_level(blue_on));
+}
+
+// Convenience presets
+static inline void status_led_off()   { status_led_set(false, false); }
+static inline void status_led_green() { status_led_set(true,  false); }
+static inline void status_led_blue()  { status_led_set(false, true);  }
+static inline void status_led_cyan()  { status_led_set(true,  true);  }
 
 void deep_sleep()
 {
@@ -1145,6 +1181,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
             case RMAKER_EVENT_CLAIM_STARTED:
                 //led_blink_start(0, 0, 50, 500);
+                status_led_blue();
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Started.");
                 epaper->fillScreen(16);
                 epaper->fullUpdate(CLEAR_FAST, false);
@@ -1157,11 +1194,11 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 vTaskDelay(pdMS_TO_TICKS(300));
                 break;
             case RMAKER_EVENT_USER_NODE_MAPPING_DONE:
-                //led_blink_start(50, 0, 0, 500);
+                status_led_off();
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_CLAIM_FAILED:
-                //led_blink_start(50, 0, 0, 500);
+                status_led_off();
                 ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
                 break;
             case RMAKER_EVENT_LOCAL_CTRL_STARTED:
@@ -1204,14 +1241,14 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == APP_NETWORK_EVENT) {
         switch (event_id) {
             case APP_NETWORK_EVENT_QR_DISPLAY: {
-                //led_blink_start(0, 0, 50, 500);
+                status_led_blue();
                 ESP_LOGI("NETWORK_EVENT", "Provisioning QR : %s", (char *)event_data);
                 esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
                 esp_qrcode_generate(&cfg_qr, (const char *)event_data);
                 break;
                 }
             case APP_NETWORK_EVENT_PROV_TIMEOUT: {
-                 //led_blink_start(50, 0, 0, 500);
+                 status_led_off();
                  ESP_LOGI("NETWORK_EVENT", "Provisioning timed-out");
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
@@ -1230,7 +1267,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == RMAKER_OTA_EVENT) {
         switch(event_id) {
             case RMAKER_OTA_EVENT_STARTING:
-                //led_blink_start(0, 50, 0, 500);
+                status_led_green();
                 ESP_LOGI(TAG, "Starting OTA.");
                 break;
             case RMAKER_OTA_EVENT_IN_PROGRESS:
@@ -1249,9 +1286,11 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGI(TAG, "OTA Delayed.");
                 break;
             case RMAKER_OTA_EVENT_REQ_FOR_REBOOT:
+                status_led_off();
                 ESP_LOGI(TAG, "Firmware image downloaded. Please reboot your device to apply the upgrade.");
                 break;
             default:
+                status_led_off();
                 ESP_LOGW(TAG, "Unhandled OTA Event: %" PRIi32, event_id);
                 break;
         }
@@ -1382,7 +1421,7 @@ void scd_read()
     }
 
     // Start Measurement
-    //led_blink_start(5, 5, 5, 1000);
+    status_led_green();
     error = scd4x_start_periodic_measurement();
     if (error)
     {
@@ -1407,7 +1446,7 @@ void scd_read()
         if (data_ready_flag)
         {
             measure_taken = true;
-            //led_blink_stop();
+            status_led_off();
             break;
         }
     }
@@ -1531,6 +1570,8 @@ void app_main()
     // WiFi log level
     esp_log_level_set("wifi", ESP_LOG_ERROR);
     epaper->initPanel(BB_PANEL_SENSORIA_C5);
+    // Configure IO expander pins for Green + Blue LEDs
+    status_led_init();
     epaper->setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
     epaper->setRotation(180);
     // 4 bit per pixel: 16 grays mode
