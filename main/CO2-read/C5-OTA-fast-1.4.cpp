@@ -1533,6 +1533,7 @@ static void log_wakeup_reason()
 {
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     ESP_LOGI(TAG, "Wakeup cause: %d", (int)cause);
+    gpio_set_direction(GPIO_NUM_0, GPIO_MODE_INPUT);
 
     switch (cause)
     {
@@ -1573,7 +1574,7 @@ void app_main()
     // Configure IO expander pins for Green + Blue LEDs
     status_led_init();
     epaper->setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
-    epaper->setRotation(180);
+    //epaper->setRotation(0);
     // 4 bit per pixel: 16 grays mode
     epaper->setMode(BB_MODE_4BPP);
     int bgcolor = 0xF;
@@ -1707,16 +1708,17 @@ void app_main()
     esp_rmaker_start();
 
     /* Uncomment to reset WiFi credentials when there is no Boot button in the ESP32 */
-    #if (FORCE_WIFI_RESET)
+    //&#if (FORCE_WIFI_RESET)
+    if (gpio_get_level(GPIO_NUM_0) == 0) {
       esp_rmaker_wifi_reset(1,10);
       nvs_open("storage", NVS_READWRITE, &nvs_h);
         nvs_set_i16(nvs_h, "boots", 0);
         nvs_close(nvs_h);
       vTaskDelay(pdMS_TO_TICKS(10000));
       return;
-      #else
-      xTaskCreate(qr_draw_task, "qr_draw", 8192, nullptr, 5, &qr_draw_task_handle);
-    #endif
+    } else {
+        xTaskCreate(qr_draw_task, "qr_draw", 8192, nullptr, 5, &qr_draw_task_handle);
+    }
     
     
     /* Start the Wi-Fi/Thread.
