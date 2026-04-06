@@ -223,11 +223,51 @@ static inline void status_led_green() { status_led_set(true,  false); }
 static inline void status_led_blue()  { status_led_set(false, true);  }
 static inline void status_led_cyan()  { status_led_set(true,  true);  }
 
+static void hold_pins_low_before_sleep()
+{
+    // IMPORTANT: do NOT include GPIO1 here if it's your RTC wake pin.
+    static const gpio_num_t ctrl_pins[] = {
+        GPIO_NUM_2, GPIO_NUM_3, GPIO_NUM_4, GPIO_NUM_5
+    };
+    // D0=GPIO8, D1=GPIO23, D2=GPIO12, D3=GPIO9, D4=GPIO24, D5=GPIO25, D6=GPIO26, D7=GPIO27
+    static const gpio_num_t data_pins[] = {
+        GPIO_NUM_8, GPIO_NUM_9, GPIO_NUM_12,
+        GPIO_NUM_23, GPIO_NUM_24, GPIO_NUM_25, GPIO_NUM_26, GPIO_NUM_27
+    };
+
+    auto force_low = [](gpio_num_t pin) {
+        gpio_config_t io = {};
+        io.intr_type = GPIO_INTR_DISABLE;
+        io.mode = GPIO_MODE_OUTPUT;
+        io.pin_bit_mask = 1ULL << pin;
+        io.pull_up_en = GPIO_PULLUP_DISABLE;
+        io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        ESP_ERROR_CHECK(gpio_config(&io));
+        ESP_ERROR_CHECK(gpio_set_level(pin, 0));
+
+        // Optional on C5: select pin for sleep control (does not set level)
+        // If this API is also absent in your IDF, remove it.
+        (void)gpio_sleep_sel_en(pin);
+    };
+
+    for (size_t i = 0; i < sizeof(ctrl_pins)/sizeof(ctrl_pins[0]); i++) {
+        force_low(ctrl_pins[i]);
+    }
+    for (size_t i = 0; i < sizeof(data_pins)/sizeof(data_pins[0]); i++) {
+        // Also put off the fucking IO expander pins
+        bbepPCA9535DigitalWrite(i, 0);
+        force_low(data_pins[i]);
+    }
+
+    ESP_LOGI("SLEEP", "Pins forced OUTPUT LOW before deep sleep%s",
+             include_parallel_bus ? " (ctrl+data)" : " (ctrl only)");
+}
+
 void deep_sleep()
 {
-    // TURN ALL OFF
-    printf("2 seconds wait before OFF\n");
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    // TURN ALL OFF. Before used to wait 2 secs still on but let's optimize for battery
+    hold_pins_low_before_sleep(true);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
     //power_hold_drive(false);
     printf("Powering OFF. Waking up from IO1 (Low on RTC alarm)\n");
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
@@ -1253,8 +1293,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
                  epaper->drawString("Provisioning timed-out.", 10, 110);
-                 epaper->drawString("< Press RESET and connect your device to USB-C", 10, 160);
-                 epaper->drawString("The LED signal should flash BLUE when it's ready >", 10, 210);
+                 epaper->drawString("< Press RESET and connect your device to USB-C", 10, 330);
+                 epaper->drawString("The LED signal should be BLUE when it's ready >", 300, 490);
                  epaper->fullUpdate();
                  vTaskDelay(pdMS_TO_TICKS(500));
                  schedule_rtc_wakeup_minutes(3);
@@ -1708,7 +1748,7 @@ void app_main()
     esp_rmaker_start();
 
     /* Uncomment to reset WiFi credentials when there is no Boot button in the ESP32 */
-    //&#if (FORCE_WIFI_RESET)
+    // gpio_get_level(GPIO_NUM_0) == 0
     if (gpio_get_level(GPIO_NUM_0) == 0) {
       esp_rmaker_wifi_reset(1,10);
       nvs_open("storage", NVS_READWRITE, &nvs_h);
