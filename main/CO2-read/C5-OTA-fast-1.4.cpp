@@ -226,9 +226,9 @@ static inline void status_led_cyan()  { status_led_set(true,  true);  }
 static void hold_pins_low_before_sleep()
 {
     // IMPORTANT: do NOT include GPIO1 here if it's your RTC wake pin.
-    static const gpio_num_t ctrl_pins[] = {
-        GPIO_NUM_2, GPIO_NUM_3, GPIO_NUM_4, GPIO_NUM_5
-    };
+    // static const gpio_num_t ctrl_pins[] = {
+    //     GPIO_NUM_2, GPIO_NUM_3, GPIO_NUM_4, GPIO_NUM_5
+    // };
     // D0=GPIO8, D1=GPIO23, D2=GPIO12, D3=GPIO9, D4=GPIO24, D5=GPIO25, D6=GPIO26, D7=GPIO27
     static const gpio_num_t data_pins[] = {
         GPIO_NUM_8, GPIO_NUM_9, GPIO_NUM_12,
@@ -250,23 +250,20 @@ static void hold_pins_low_before_sleep()
         (void)gpio_sleep_sel_en(pin);
     };
 
-    for (size_t i = 0; i < sizeof(ctrl_pins)/sizeof(ctrl_pins[0]); i++) {
-        force_low(ctrl_pins[i]);
-    }
+    // for (size_t i = 0; i < sizeof(ctrl_pins)/sizeof(ctrl_pins[0]); i++) {
+    //     force_low(ctrl_pins[i]);
+    // }
     for (size_t i = 0; i < sizeof(data_pins)/sizeof(data_pins[0]); i++) {
         // Also put off the fucking IO expander pins
         bbepPCA9535DigitalWrite(i, 0);
         force_low(data_pins[i]);
     }
-
-    ESP_LOGI("SLEEP", "Pins forced OUTPUT LOW before deep sleep%s",
-             include_parallel_bus ? " (ctrl+data)" : " (ctrl only)");
 }
 
 void deep_sleep()
 {
     // TURN ALL OFF. Before used to wait 2 secs still on but let's optimize for battery
-    hold_pins_low_before_sleep(true);
+    hold_pins_low_before_sleep();
     vTaskDelay(50 / portTICK_PERIOD_MS);
     //power_hold_drive(false);
     printf("Powering OFF. Waking up from IO1 (Low on RTC alarm)\n");
