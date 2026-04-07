@@ -10,7 +10,7 @@
 // C5 schematic: LED_BLUE = IO1_2, LED_GREEN = IO1_3
 #define EXTIO_LED_BLUE   (8+3)  // IO1_3 3 & 2 are swapped in schematics
 #define EXTIO_LED_GREEN  (8+2)  // IO1_2
-
+#define IO_BOOT_C5 GPIO_NUM_28
 // SENSOR ID (old API_KEY)
 char * nvs_sensor_id;
 size_t sensor_id_size;
@@ -1746,7 +1746,7 @@ void app_main()
 
     /* Uncomment to reset WiFi credentials when there is no Boot button in the ESP32 */
     // gpio_get_level(GPIO_NUM_0) == 0
-    if (gpio_get_level(GPIO_NUM_0) == 0) {
+    if (gpio_get_level(IO_BOOT_C5) == 0) {
       esp_rmaker_wifi_reset(1,10);
       nvs_open("storage", NVS_READWRITE, &nvs_h);
         nvs_set_i16(nvs_h, "boots", 0);
