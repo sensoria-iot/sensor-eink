@@ -4,6 +4,10 @@ build/
 
 # IDE
 .vscode
+.DS_Store
+
+# IDF
+sdkconfig.old
 
 # Prerequisites
 *.d
