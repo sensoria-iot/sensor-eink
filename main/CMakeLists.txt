@@ -8,7 +8,7 @@ set(app_sources "CO2-read/led_controller.c"
                 )
 # Only test I2C. RTC address is 0x51
 #set(app_sources "tools/i2cscan.c")
-
+#set(app_sources "historic/onlyRTC.cpp")
 # 4 new small white PCB C3 
 set(app_requires  
                  fastepd
