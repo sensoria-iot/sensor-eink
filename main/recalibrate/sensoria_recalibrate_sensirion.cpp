@@ -77,10 +77,15 @@ void app_main() {
     }
     // try to recalibrate it to the ambient value of 430 ppm
     //rc = co2.recalibrate(430);
-    rc = scd4x_perform_forced_recalibration(430, (uint16_t*)0);
+    scd4x_stop_periodic_measurement();
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    uint16_t frc_correction = 0;
+    rc = scd4x_perform_forced_recalibration(430, &frc_correction);
+
     if (rc == 0) {
       epaper.drawString("Calibration Succeeded!", 10, 260);
-      printf("Calibration Succeeded! \n");
+      printf("Calibration Succeeded! frc_correction=%d\n", frc_correction);
     } else {
       epaper.drawString("Calibration failed", 10, 260);
       printf("Calibration failed. ERR: %d\n", rc);

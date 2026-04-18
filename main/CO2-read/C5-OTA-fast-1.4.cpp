@@ -264,7 +264,7 @@ void deep_sleep()
 {
     // TURN ALL OFF. Before used to wait 2 secs still on but let's optimize for battery
     hold_pins_low_before_sleep();
-    vTaskDelay(50 / portTICK_PERIOD_MS);
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
     //power_hold_drive(false);
     printf("Powering OFF. Waking up from IO1 (Low on RTC alarm)\n");
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
@@ -1468,6 +1468,7 @@ void scd_read()
     }
 
     printf("Waiting for first measurement... (5 sec)\n");
+    //scd4x_set_automatic_self_calibration(1);
     bool data_ready_flag = false;
     for (uint8_t c = 0; c < 100; ++c)
     {
