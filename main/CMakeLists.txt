@@ -19,7 +19,6 @@ set(app_requires
                  i2c_bus
                  fastepd
                  bb_rtc
-                 bb_scd41
                  BQ27426_idf
                  json
                  scd40      # sensor

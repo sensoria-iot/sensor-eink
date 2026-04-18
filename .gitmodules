@@ -10,3 +10,6 @@
 [submodule "components/bb_scd41"]
 	path = components/bb_scd41
 	url = https://github.com/bitbank2/bb_scd41
+[submodule "components/scd40"]
+	path = components/scd40
+	url = https://github.com/martinberlin/scd4x-idf-i2cmaster
