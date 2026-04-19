@@ -1,102 +1,94 @@
 #include <FastEPD.h>
-// Edit your API setup and general configuration options:
 #include "../config.h"
-//#include <bb_scd41.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+
 // SCD4x
 #include "scd4x_i2c.h"
 #include "sensirion_common.h"
 #include "sensirion_i2c_hal.h"
 
 #include <fast/Roboto_Black_40.h>
-FASTEPD epaper;
-// Note: Larry example was recoded to use sensirion library
-//SCD41 co2;
-char *TAG = "calibration";
-#define BUTTON 28
 
+static FASTEPD *epaper = nullptr;
+static const char *TAG = "calibration";
+#define BUTTON 28 // Not really used this time
 
-extern "C"
+extern "C" { void app_main(); }
+
+void app_main()
 {
-    void app_main();
-}
+    epaper = new FASTEPD();
+    epaper->initPanel(BB_PANEL_SENSORIA_C5);
+    epaper->fillScreen(BBEP_WHITE);
+    epaper->setTextColor(BBEP_BLACK);
+    epaper->setFont(Roboto_Black_40);
 
-void app_main() {
-  int iTime;
-  //pinMode(BUTTON, INPUT); // boot button
-  epaper.initPanel(BB_PANEL_SENSORIA_C5);
-  epaper.fillScreen(BBEP_WHITE);
-  epaper.setTextColor(BBEP_BLACK);
-  epaper.setFont(Roboto_Black_40);
-  epaper.setCursor(0, 60);
+    esp_err_t rc = sensirion_i2c_hal_init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "sensirion_i2c_hal_init failed: %s", esp_err_to_name(rc));
+        epaper->drawString("I2C init failed", 10, 160);
+        epaper->fullUpdate();
+        vTaskDelay(portMAX_DELAY);
+    }
 
-      // int16_t sensirion_i2c_hal_init(int gpio_sda, int gpio_scl);
-   esp_err_t rc = sensirion_i2c_hal_init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
-
-    // Clean up potential SCD40 states
+    // Clean up potential SCD40 states (now safe: I2C is initialized)
     scd4x_wake_up();
     scd4x_stop_periodic_measurement();
     scd4x_reinit();
 
-  //int rc = co2.init(SDA_PIN, SCL_PIN);
-  if (rc == ESP_OK) {
-    ESP_LOGI(TAG, "SCD40 OK");
-    //co2.start(); // start periodic updates
-    //co2.setAutoCalibrate(false); // turn off auto-calibration (switches to manual calibration)
-    esp_err_t co2_start = scd4x_start_periodic_measurement();
-    scd4x_set_automatic_self_calibration(0); // turn off auto-calibration
-    if (co2_start)
-    {
-        ESP_LOGE(TAG, "Error executing scd4x_start_periodic_measurement()");
-        vTaskDelay(pdMS_TO_TICKS(10000));
+    // Disable ASC before starting measurement
+    scd4x_set_automatic_self_calibration(0);
+
+    // Start periodic measurement to let it settle in outdoor air
+    rc = scd4x_start_periodic_measurement();
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Error executing scd4x_start_periodic_measurement(): %d", rc);
+        epaper->drawString("SCD4x start failed", 10, 160);
+        epaper->fullUpdate();
+        vTaskDelay(portMAX_DELAY);
     }
-    epaper.setCursor(20, 120);
-    epaper.drawString("SCD4x found!", 10, 20);
-    ESP_LOGW(TAG, "Place sensor outside. In 3 seconds calibration starts");
-    epaper.setCursor(20, 200);
-    epaper.drawString("Place sensor outside. In 3 seconds calibration starts", 10, 80);
-    epaper.fullUpdate();
-    //while (digitalRead(BUTTON) == 1) {
-      vTaskDelay(pdMS_TO_TICKS(3000));
-    //}
-    iTime = 30*7; // 3.5 minutes
+
+    epaper->drawString("SCD4x found!", 10, 20);
+    epaper->drawString("Place sensor outside.", 10, 80);
+    epaper->drawString("Calibration starts in 3s", 10, 140);
+    epaper->fullUpdate();
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    int iTime = 30 * 7; // 3.5 minutes
     char text[20];
     while (iTime > 0) {
-      epaper.fillScreen(BBEP_WHITE);
-      epaper.setCursor(0, 60);
-      epaper.drawString("Running calibration", 10, 150);
-      epaper.drawString("Time remaining:", 10, 200);
-      sprintf(text, "%02d:%02d\n", iTime/60, iTime % 60);
-      epaper.drawString(text, 10, 260);
-      printf("%s \n", text);
-      vTaskDelay(pdMS_TO_TICKS(5000));
-      iTime -= 5; // show time in 5 second increments
-      epaper.partialUpdate(false);
+        epaper->fillScreen(BBEP_WHITE);
+        epaper->drawString("Running calibration", 10, 150);
+        epaper->drawString("Time remaining:", 10, 200);
+        sprintf(text, "%02d:%02d\n", iTime / 60, iTime % 60);
+        epaper->drawString(text, 10, 260);
+        printf("%s\n", text);
+
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        iTime -= 5;
+        epaper->partialUpdate(false);
     }
-    // try to recalibrate it to the ambient value of 430 ppm
-    //rc = co2.recalibrate(430);
+
+    // Stop periodic measurement before FRC
     scd4x_stop_periodic_measurement();
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
     uint16_t frc_correction = 0;
     rc = scd4x_perform_forced_recalibration(430, &frc_correction);
 
-    if (rc == 0) {
-      epaper.drawString("Calibration Succeeded!", 10, 260);
-      printf("Calibration Succeeded! frc_correction=%d\n", frc_correction);
+    if (rc == 0 && frc_correction != 0xFFFF) {
+        epaper->drawString("Calibration Succeeded!", 10, 260);
+        printf("Calibration Succeeded! frc_correction=%u\n", frc_correction);
     } else {
-      epaper.drawString("Calibration failed", 10, 260);
-      printf("Calibration failed. ERR: %d\n", rc);
+        epaper->drawString("Calibration failed", 10, 260);
+        printf("Calibration failed. rc=%d frc_correction=0x%04X\n", rc, frc_correction);
     }
-    epaper.partialUpdate(false);
-  } else {
-    epaper.drawString("SCD4x not found.", 10, 160);
-    epaper.fullUpdate();
-    epaper.deInit();
-    while (1) {
-      vTaskDelay(1);
-    }
-  }
+    epaper->partialUpdate(false);
+
+    // Optional: release display resources if you want the absolute lowest idle current after running
+    // epaper.deInit();
+
+    vTaskDelay(portMAX_DELAY);
 }
