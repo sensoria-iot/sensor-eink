@@ -198,6 +198,11 @@ static volatile uint32_t s_last_btn_us = 0;
 
 static volatile bool s_calib_mode = false;       // waiting for 2nd press
 static volatile bool s_calib_run_requested = false;
+static uint32_t s_last_click_us = 0;
+static uint8_t  s_click_count = 0;
+
+static const uint32_t CLICK_DEBOUNCE_US = 80 * 1000;      // 80ms
+static const uint32_t DOUBLECLICK_US    = 500 * 1000;     // 500ms window
 
 static void IRAM_ATTR boot_btn_isr(void *arg)
 {
@@ -1632,12 +1637,14 @@ static void log_wakeup_reason()
 
 static void scd40_run_forced_recalibration_ui(uint16_t reference_ppm = 430)
 {
+    uint16_t x_cursor = 50;
+    uint16_t y_cursor = 150;
     // Make sure I2C HAL is up (your firmware uses sensirion_i2c_hal_init in scd_read too)
     esp_err_t rc = sensirion_i2c_hal_init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
     if (rc != ESP_OK) {
         epaper->fillScreen(0xF);
         epaper->setFont(ubuntu30);
-        epaper->drawString("I2C init failed", 40, 120);
+        epaper->drawString("I2C init failed", x_cursor, y_cursor);
         epaper->fullUpdate(true, false);
         return;
     }
@@ -1652,30 +1659,31 @@ static void scd40_run_forced_recalibration_ui(uint16_t reference_ppm = 430)
     if (rc != 0) {
         epaper->fillScreen(0xF);
         epaper->setFont(ubuntu30);
-        epaper->drawString("SCD4x start failed", 40, 120);
+        epaper->drawString("SCD4x start failed", x_cursor, y_cursor);
         epaper->fullUpdate(true, false);
         sensirion_i2c_hal_free();
         return;
     }
-
+    y_cursor = 90;
     // 3.5 minutes stabilization (same as your tool)
     int iTime = 30 * 7;
     char text[32];
 
     epaper->fillScreen(0xF);
     epaper->setFont(ubuntu30);
-    epaper->drawString("Calibration running", 40, 80);
-    epaper->drawString("Keep in open air", 40, 130);
+    epaper->drawString("Calibration running", x_cursor, y_cursor);
+    y_cursor += 50;
+    epaper->drawString("Keep in open air", x_cursor, y_cursor);
     epaper->fullUpdate(true, false);
 
     while (iTime > 0) {
-        epaper->fillRect(40, 200, 600, 80, 0xF);
+        epaper->fillRect(x_cursor, 200, 600, 80, 0xF);
         epaper->setFont(ubuntu40);
         snprintf(text, sizeof(text), "%02d:%02d", iTime / 60, iTime % 60);
-        epaper->drawString(text, 40, 250);
+        epaper->drawString(text, x_cursor, 250);
 
         // Use fullUpdate on a small box to avoid partial-update quirks
-        BB_RECT box{ .x = 30, .y = 60, .w = 700, .h = 260 };
+        BB_RECT box{ .x = x_cursor, .y = 60, .w = 700, .h = 260 };
         epaper->fullUpdate(false, false, &box);
 
         vTaskDelay(pdMS_TO_TICKS(5000));
@@ -1688,17 +1696,17 @@ static void scd40_run_forced_recalibration_ui(uint16_t reference_ppm = 430)
     uint16_t frc_correction = 0;
     rc = scd4x_perform_forced_recalibration(reference_ppm, &frc_correction);
 
-    epaper->fillRect(40, 300, 900, 160, 0xF);
+    epaper->fillRect(x_cursor, 300, 900, 160, 0xF);
     epaper->setFont(ubuntu30);
 
     if (rc == 0 && frc_correction != 0xFFFF) {
         snprintf(text, sizeof(text), "Success! FRC=%u", frc_correction);
         epaper->drawString("Calibration OK", 40, 340);
-        epaper->drawString(text, 40, 390);
+        epaper->drawString(text, x_cursor, 390);
     } else {
         snprintf(text, sizeof(text), "rc=%d FRC=0x%04X", (int)rc, frc_correction);
         epaper->drawString("Calibration FAILED", 40, 340);
-        epaper->drawString(text, 40, 390);
+        epaper->drawString(text, x_cursor, 390);
     }
 
     epaper->fullUpdate(true, false);
@@ -1706,41 +1714,116 @@ static void scd40_run_forced_recalibration_ui(uint16_t reference_ppm = 430)
     // Put sensor back to low power
     scd4x_power_down();
     sensirion_i2c_hal_free();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+static bool button_is_still_pressed()
+{
+    // Boot button is active-low
+    return gpio_get_level(IO_BOOT_C5) == 0;
+}
+
+// returns true if user held long enough (abort), false if released early (start)
+static bool wait_for_longpress_abort(uint32_t hold_ms)
+{
+    const int poll_ms = 20;
+    int waited = 0;
+
+    while (waited < (int)hold_ms) {
+        if (!button_is_still_pressed()) {
+            return false; // released => not a long-press
+        }
+        vTaskDelay(pdMS_TO_TICKS(poll_ms));
+        waited += poll_ms;
+    }
+    return true; // still pressed after hold_ms => long-press
 }
 
 static void calibration_task(void *arg)
 {
     (void)arg;
+
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        if (!s_calib_mode) {
-            // 1st press -> arm calibration
-            s_calib_mode = true;
+        const uint32_t now = (uint32_t)esp_timer_get_time();
 
-            status_led_blue();
-            epaper->fillScreen(0xF);
-            epaper->setFont(ubuntu30);
-            epaper->drawString("SCD40 Calibration", 40, 80);
-            epaper->drawString("Go to open air.", 40, 140);
-            epaper->drawString("Press button again", 40, 200);
-            epaper->drawString("to start.", 40, 250);
-            epaper->fullUpdate(true, false);
+        // Debounce
+        if (s_last_click_us && (now - s_last_click_us) < CLICK_DEBOUNCE_US) {
+            continue;
+        }
+
+        if (!s_calib_mode) {
+            // Not armed yet: require double click to arm
+            if (s_last_click_us == 0 || (now - s_last_click_us) > DOUBLECLICK_US) {
+                // start a new click sequence
+                s_click_count = 1;
+                s_last_click_us = now;
+
+                // Optional: small UI hint (or do nothing)
+                // epaper->drawString("Double-click for calibration", ...);
+                // epaper->fullUpdate(...);
+
+                continue;
+            }
+
+            // Within window: this is the 2nd click
+            s_click_count++;
+            s_last_click_us = now;
+
+            if (s_click_count >= 2) {
+                s_click_count = 0;
+                s_last_click_us = 0;
+
+                // Arm calibration
+                s_calib_mode = true;
+
+                status_led_blue();
+                epaper->fillScreen(0xF);
+                epaper->setFont(ubuntu30);
+                epaper->drawString("SCD40 Calibration", 40, 80);
+                epaper->drawString("Go to open air.", 40, 140);
+                epaper->drawString("Press button to start", 40, 200);
+                epaper->drawString("(hold to abort)", 40, 250);
+                epaper->fullUpdate(true, false);
+            }
 
         } else {
-            // 2nd press -> run calibration
+            // Armed: press-and-hold aborts, short press starts.
+            // If user keeps holding for >2s -> abort.
+            // If they release earlier -> start calibration.
+            const bool abort = wait_for_longpress_abort(2000);
+
+            if (abort) {
+                // Wait for release so we don't immediately re-trigger on the next edge
+                while (button_is_still_pressed()) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+
+                s_calib_mode = false;
+                status_led_off();
+                epaper->fillScreen(0xF);
+                epaper->setFont(ubuntu30);
+                epaper->drawString("Calibration aborted", 40, 150);
+                epaper->fullUpdate(true, false);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+                // Reset click detection state
+                s_click_count = 0;
+                s_last_click_us = 0;
+                continue;
+            }
+
+            // Short press => start calibration (but ensure the button is released)
+            while (button_is_still_pressed()) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+
             s_calib_mode = false;
             status_led_cyan();
-
             scd40_run_forced_recalibration_ui(430);
-
             status_led_off();
-
-            // After calibration, you can either:
-            // A) return to normal flow (do nothing here)
-            // B) deep sleep immediately:
-            // deep_sleep();
-        }
+            }
     }
 }
 
