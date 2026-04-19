@@ -15,7 +15,7 @@
 char * nvs_sensor_id;
 size_t sensor_id_size;
 
-float firmware_version = 1.0;
+float firmware_version = 1.1;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
@@ -1300,7 +1300,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
             case RMAKER_EVENT_WIFI_RESET:
                 ESP_LOGI(TAG, "Wi-Fi credentials reset.");
-                epaper->drawString("Wi-Fi credentials are cleared", 10, 45);
+                epaper->drawString("Wi-Fi credentials are cleared", 50, 90);
                 epaper->fullUpdate();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
