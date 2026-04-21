@@ -1591,8 +1591,7 @@ void build_request_json() {
         sprintf(esp_ip, IPSTR, IP2STR(&ip_info.ip));
         char rtc_time_str[28];
         sprintf(rtc_time_str, "%d-%02d-%02d %02d:%02d:%02d", RTCTime.tm_year-100, RTCTime.tm_mon, RTCTime.tm_mday, RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec);
-        // Read MCU MAC
-        mac_string = getFormattedMacAddress();
+        // Before mac was read here now in app_main
         memset(&result, 0, sizeof(json_gen_test_result_t));
         json_gen_str_t jstr;
         json_gen_str_start(&jstr, result.buf, sizeof(result.buf), flush_str, &result);
@@ -1836,11 +1835,10 @@ void app_main()
     // Wake up when RTC_INT_GPIO is driven LOW by the RTC
     ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(1ULL << RTC_INT_GPIO, ESP_EXT1_WAKEUP_ANY_LOW));
 
-    // Configure Dotstar LED
-    //led_strip_handle_t led_strip = led_configure();
-    //ESP_ERROR_CHECK( led_controller_init(led_strip, 1, 2048, tskIDLE_PRIORITY+1) );
+    // Read MCU MAC
+    mac_string = getFormattedMacAddress();
 
-    printf("RTC OTA C5 version %.2f (No ADC)\n", firmware_version);
+    printf("RTC OTA C5 version %.2f MAC: %s\n", firmware_version, mac_string);
     epaper = new FASTEPD();
 
     esp_err_t err;
