@@ -747,9 +747,10 @@ static void rv3032_force_int_enable()
 
 void parse_json(const char* json_string)
 {
-    // Always clear the claim flag first so callers get a clean state even
+    // Always clear these flags first so callers get a clean state even
     // when cJSON_Parse() fails (e.g. plain-text "Unauthorised" body).
     res_friendly_id[0] = '\0';
+    res_message[0] = '\0';
 
     // Parse the JSON string
     cJSON *root = cJSON_Parse(json_string);
@@ -1189,16 +1190,22 @@ void send_data_to_api()
     // or parse analytics fields if the device is already onboarded.
     parse_json(local_response_buffer);
 
-    // HTTP 401 means the MAC is not yet registered, regardless of body format.
-    // The body may be plain "Unauthorised" text or JSON with a friendly_id field.
-    if (status_code == 401 || res_friendly_id[0] != '\0') {
-        // If the 401 body did not contain a friendly_id, fall back to the MAC so
-        // the user still has a reference they can use to claim the device.
+    // Detect unregistered device in all the ways the backend can signal it:
+    //   1. Explicit HTTP 401
+    //   2. A friendly_id field in the response body (future backend behaviour)
+    //   3. HTTP 200 with {"message": "Unauthorized"/"Unauthorised"} (current backend behaviour)
+    bool claim_pending = (status_code == 401) ||
+                         (res_friendly_id[0] != '\0') ||
+                         (strncasecmp(res_message, "Unauthori", 9) == 0);
+
+    if (claim_pending) {
+        // If no friendly_id came from the body, use the MAC so the user has
+        // a reference they can type into sensoria.cat to claim the device.
         if (res_friendly_id[0] == '\0') {
             snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", mac_string);
         }
-        ESP_LOGI(TAG, "Device not onboarded (HTTP %d). Showing claim screen with ID: %s",
-                 status_code, res_friendly_id);
+        ESP_LOGI(TAG, "Device not onboarded (HTTP %d, msg='%s'). Claim ID: %s",
+                 status_code, res_message, res_friendly_id);
         draw_claim_screen(res_friendly_id);
         nvs_minutes_till_refresh = 5;
         schedule_rtc_wakeup_minutes(5);
