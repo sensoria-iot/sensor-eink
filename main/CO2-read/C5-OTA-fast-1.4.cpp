@@ -11,9 +11,6 @@
 #define EXTIO_LED_BLUE   (8+3)  // IO1_3 3 & 2 are swapped in schematics
 #define EXTIO_LED_GREEN  (8+2)  // IO1_2
 #define IO_BOOT_C5 GPIO_NUM_28
-// SENSOR ID (old API_KEY)
-char * nvs_sensor_id;
-size_t sensor_id_size;
 
 float firmware_version = 1.1;
 
@@ -521,7 +518,8 @@ static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_pa
 bool check_firmware_update(char* update_url, size_t url_size)
 {
     char url[256];
-    snprintf(url, sizeof(url), "http://%s/api/firmware/C5/%s", WEB_HOST, nvs_sensor_id);
+    // Attention: Backend should validate this for C5 only using MAC and not anymore sensor_id
+    snprintf(url, sizeof(url), "http://%s/api/firmware/C5/%s", WEB_HOST, mac_string);
     
     ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
     
@@ -1114,7 +1112,7 @@ void send_data_to_api()
 
     printf("DATA: %s \nURL: %s\n", result.buf, API_URL);
     esp_http_client_handle_t client = esp_http_client_init(&config);
-
+    // Please set here the Authorisation: Bearer
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, result.buf, strlen(result.buf));
     esp_err_t err = ESP_OK;
@@ -1186,9 +1184,6 @@ static void qr_draw_task(void *arg)
             continue;
         }
 
-        // Defensive: ensure strings exist
-        const char *id = (nvs_sensor_id) ? nvs_sensor_id : "NO_ID";
-
         const int size = g_qr.size;
         const int sq = 5;
         const int x_offset = EPD_WIDTH - 260;
@@ -1217,7 +1212,7 @@ static void qr_draw_task(void *arg)
         snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
         epaper->drawString(textbuffer, 430, 160);
 
-        snprintf(textbuffer, sizeof(textbuffer), "%s", id);
+        snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
         epaper->drawString(textbuffer, 462, 310);
 
         snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
@@ -1600,7 +1595,8 @@ void build_request_json() {
         json_gen_obj_set_float(&jstr, "temperature", tem);
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
-        json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
+        // No more key here. Authentication: Bearer will be sent in the request
+        //json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "rtc_t", rtc_time_str);
         json_gen_obj_set_string(&jstr, "model", "S3");
         json_gen_obj_set_float(&jstr, "version", firmware_version);
@@ -1876,10 +1872,6 @@ void app_main()
     {
         ESP_LOGE(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
     }
-    // Read stored SENSOR_ID
-    nvs_get_str(nvs_h, "sensor_id", NULL, &sensor_id_size);
-    nvs_sensor_id = (char*)malloc(sensor_id_size);
-    nvs_get_str(nvs_h, "sensor_id", nvs_sensor_id, &sensor_id_size);
 
     nvs_get_i16(nvs_h, "boots", &nvs_boots);
     ESP_LOGI(TAG, "-> NVS Boot count: %d", nvs_boots);
@@ -1887,14 +1879,7 @@ void app_main()
     // Set new value
     nvs_set_i16(nvs_h, "boots", nvs_boots);
     
-    if (strcmp(SENSOR_ID, "") == 0) {
-        printf("SENSOR_ID is empty reading it from NVS\n");
-    } else {
-        nvs_set_str(nvs_h, "sensor_id", SENSOR_ID);
-        strcpy(nvs_sensor_id, SENSOR_ID);
-    }
-    nvs_commit(nvs_h);
-    nvs_close(nvs_h);
+    // No more SENSOR ID let's use the MAC!
 
     // We read sensor here
     scd_read();
