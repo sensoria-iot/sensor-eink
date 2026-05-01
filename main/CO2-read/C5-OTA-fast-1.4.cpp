@@ -178,6 +178,11 @@ char res_message[40];
 int16_t nvs_boots = 0;
 // Define the global MAC address variable
 char* mac_string;
+// Friendly ID returned by the backend when the device MAC is not yet onboarded
+#define FRIENDLY_ID_MAX_LEN 48
+// Authorization header value: "Bearer xx:xx:xx:xx:xx:xx" + null
+#define AUTH_HEADER_MAX_LEN 64
+char res_friendly_id[FRIENDLY_ID_MAX_LEN] = {0};
 
 // EPD framebuffer
 uint8_t *fb;
@@ -749,6 +754,17 @@ void parse_json(const char* json_string)
         return;
     }
 
+    // If the backend returns a friendly_id the device is not yet onboarded.
+    // Store it and return early – the caller will handle the claim screen.
+    res_friendly_id[0] = '\0';
+    cJSON *fid = cJSON_GetObjectItem(root, "friendly_id");
+    if (cJSON_IsString(fid) && fid->valuestring != NULL) {
+        snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", fid->valuestring);
+        ESP_LOGI(TAG, "Device not onboarded yet. Friendly ID: %s", res_friendly_id);
+        cJSON_Delete(root);
+        return;
+    }
+
     // sleep_minutes: Get the integer value
     cJSON *sleep_minutes = cJSON_GetObjectItem(root, "sleep_minutes");
     cJSON *sensor_tipo = cJSON_GetObjectItem(root, "tipo");
@@ -894,6 +910,38 @@ void parse_json(const char* json_string)
     }
     printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
     rv3032_force_int_enable();
+}
+
+/**
+ * @brief Display the "Claim your device" screen showing the friendly_id.
+ *
+ * Called when the backend returns a friendly_id instead of sensor analytics,
+ * meaning the device MAC has not yet been onboarded.
+ *
+ * @param friendly_id Human-readable claim code returned by the backend.
+ */
+void draw_claim_screen(const char* friendly_id)
+{
+    epaper->fillScreen(0xF);
+    epaper->setTextColor(0x0);
+
+    epaper->setFont(ubuntu30);
+    epaper->drawString("Claim your device", 100, 80);
+
+    epaper->setFont(ubuntu20);
+    epaper->drawString("Visit sensoria.cat and enter your device ID:", 80, 160);
+
+    epaper->setFont(ubuntu40);
+    epaper->drawString(friendly_id, 200, 260);
+
+    epaper->setFont(ubuntu20);
+    char textbuffer[AUTH_HEADER_MAX_LEN];
+    snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
+    epaper->drawString(textbuffer, 80, 370);
+    epaper->drawString("Checking again in 5 minutes...", 80, 430);
+
+    BB_RECT box{ .x = 0, .y = 0, .w = EPD_WIDTH, .h = EPD_HEIGHT };
+    epaper->fullUpdate(true, false, &box);
 }
 
 /**
@@ -1112,8 +1160,12 @@ void send_data_to_api()
 
     printf("DATA: %s \nURL: %s\n", result.buf, API_URL);
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    // Please set here the Authorisation: Bearer
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    // Authorisation: Bearer MAC_ADDRESS – used by backend to identify the device.
+    // If the MAC is not yet registered the backend returns a JSON with a friendly_id.
+    char auth_header[AUTH_HEADER_MAX_LEN];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", mac_string);
+    esp_http_client_set_header(client, "Authorization", auth_header);
     esp_http_client_set_post_field(client, result.buf, strlen(result.buf));
     esp_err_t err = ESP_OK;
 
@@ -1128,10 +1180,19 @@ void send_data_to_api()
         schedule_rtc_wakeup_minutes(10);
     }
 
-    // Got a body - parse and draw
-    //ESP_LOG_BUFFER_CHAR(TAG, local_response_buffer, strlen(local_response_buffer));
+    // parse_json() will set res_friendly_id if the device is not yet onboarded,
+    // or parse analytics fields and set the RTC alarm if it is.
     parse_json(local_response_buffer);
-    draw_response_analisis(res_tipo);
+
+    if (res_friendly_id[0] != '\0') {
+        // Device not registered: show claim screen and come back in 5 minutes.
+        draw_claim_screen(res_friendly_id);
+        nvs_minutes_till_refresh = 5;
+        schedule_rtc_wakeup_minutes(5);
+    } else {
+        // Normal onboarded response: render analytics.
+        draw_response_analisis(res_tipo);
+    }
 
     // Clean up
     esp_http_client_cleanup(client);
