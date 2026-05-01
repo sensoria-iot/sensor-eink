@@ -747,6 +747,10 @@ static void rv3032_force_int_enable()
 
 void parse_json(const char* json_string)
 {
+    // Always clear the claim flag first so callers get a clean state even
+    // when cJSON_Parse() fails (e.g. plain-text "Unauthorised" body).
+    res_friendly_id[0] = '\0';
+
     // Parse the JSON string
     cJSON *root = cJSON_Parse(json_string);
     if (root == NULL) {
@@ -756,7 +760,6 @@ void parse_json(const char* json_string)
 
     // If the backend returns a friendly_id the device is not yet onboarded.
     // Store it and return early – the caller will handle the claim screen.
-    res_friendly_id[0] = '\0';
     cJSON *fid = cJSON_GetObjectItem(root, "friendly_id");
     if (cJSON_IsString(fid) && fid->valuestring != NULL) {
         snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", fid->valuestring);
@@ -1170,9 +1173,11 @@ void send_data_to_api()
     esp_err_t err = ESP_OK;
 
     err = esp_http_client_perform(client);
+    int status_code = 0;
     if (err == ESP_OK)
     {
-        ESP_LOGI(TAG, "HTTP POST Status = %d", esp_http_client_get_status_code(client));
+        status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "HTTP POST Status = %d", status_code);
     }
     else
     {
@@ -1180,12 +1185,20 @@ void send_data_to_api()
         schedule_rtc_wakeup_minutes(10);
     }
 
-    // parse_json() will set res_friendly_id if the device is not yet onboarded,
-    // or parse analytics fields and set the RTC alarm if it is.
+    // parse_json() will set res_friendly_id if the body contains a friendly_id field,
+    // or parse analytics fields if the device is already onboarded.
     parse_json(local_response_buffer);
 
-    if (res_friendly_id[0] != '\0') {
-        // Device not registered: show claim screen and come back in 5 minutes.
+    // HTTP 401 means the MAC is not yet registered, regardless of body format.
+    // The body may be plain "Unauthorised" text or JSON with a friendly_id field.
+    if (status_code == 401 || res_friendly_id[0] != '\0') {
+        // If the 401 body did not contain a friendly_id, fall back to the MAC so
+        // the user still has a reference they can use to claim the device.
+        if (res_friendly_id[0] == '\0') {
+            snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", mac_string);
+        }
+        ESP_LOGI(TAG, "Device not onboarded (HTTP %d). Showing claim screen with ID: %s",
+                 status_code, res_friendly_id);
         draw_claim_screen(res_friendly_id);
         nvs_minutes_till_refresh = 5;
         schedule_rtc_wakeup_minutes(5);
