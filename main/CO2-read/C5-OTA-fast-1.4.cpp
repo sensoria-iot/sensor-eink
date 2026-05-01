@@ -182,6 +182,8 @@ char* mac_string;
 #define FRIENDLY_ID_MAX_LEN 48
 // Authorization header value: "Bearer xx:xx:xx:xx:xx:xx" + null
 #define AUTH_HEADER_MAX_LEN 64
+// Default retry interval (minutes) when the backend does not supply sleep_minutes
+#define CLAIM_RETRY_MINUTES 10
 char res_friendly_id[FRIENDLY_ID_MAX_LEN] = {0};
 
 // EPD framebuffer
@@ -760,11 +762,19 @@ void parse_json(const char* json_string)
     }
 
     // If the backend returns a friendly_id the device is not yet onboarded.
-    // Store it and return early – the caller will handle the claim screen.
+    // Also read sleep_minutes so the backend can control the retry interval.
+    // Return early – the caller will handle the claim screen.
     cJSON *fid = cJSON_GetObjectItem(root, "friendly_id");
     if (cJSON_IsString(fid) && fid->valuestring != NULL) {
         snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", fid->valuestring);
-        ESP_LOGI(TAG, "Device not onboarded yet. Friendly ID: %s", res_friendly_id);
+        cJSON *sm = cJSON_GetObjectItem(root, "sleep_minutes");
+        if (cJSON_IsNumber(sm) && sm->valueint > 0) {
+            nvs_minutes_till_refresh = sm->valueint;
+        } else {
+            nvs_minutes_till_refresh = CLAIM_RETRY_MINUTES; // sensible default if field is missing
+        }
+        ESP_LOGI(TAG, "Device not onboarded. Friendly ID: %s, sleep: %d min",
+                 res_friendly_id, nvs_minutes_till_refresh);
         cJSON_Delete(root);
         return;
     }
@@ -1190,25 +1200,23 @@ void send_data_to_api()
     // or parse analytics fields if the device is already onboarded.
     parse_json(local_response_buffer);
 
-    // Detect unregistered device in all the ways the backend can signal it:
-    //   1. Explicit HTTP 401
-    //   2. A friendly_id field in the response body (future backend behaviour)
-    //   3. HTTP 200 with {"message": "Unauthorized"/"Unauthorised"} (current backend behaviour)
-    bool claim_pending = (status_code == 401) ||
-                         (res_friendly_id[0] != '\0') ||
-                         (strncasecmp(res_message, "Unauthori", 9) == 0);
+    // Detect unregistered device. The backend now always sends a proper JSON
+    // with a friendly_id field. HTTP 401 is kept as a belt-and-braces guard.
+    bool claim_pending = (status_code == 401) || (res_friendly_id[0] != '\0');
 
     if (claim_pending) {
-        // If no friendly_id came from the body, use the MAC so the user has
-        // a reference they can type into sensoria.cat to claim the device.
+        // If somehow no friendly_id came from the body, use the MAC so the
+        // user still has a reference to enter at sensoria.cat.
         if (res_friendly_id[0] == '\0') {
             snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", mac_string);
+            // nvs_minutes_till_refresh was already set by parse_json() from the
+            // backend's sleep_minutes field, or it holds the DEEP_SLEEP_MINUTES
+            // default – either is a reasonable retry interval.
         }
-        ESP_LOGI(TAG, "Device not onboarded (HTTP %d, msg='%s'). Claim ID: %s",
-                 status_code, res_message, res_friendly_id);
+        ESP_LOGI(TAG, "Device not onboarded (HTTP %d). Claim ID: %s, retry in %d min",
+                 status_code, res_friendly_id, nvs_minutes_till_refresh);
         draw_claim_screen(res_friendly_id);
-        nvs_minutes_till_refresh = 5;
-        schedule_rtc_wakeup_minutes(5);
+        schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
     } else {
         // Normal onboarded response: render analytics.
         draw_response_analisis(res_tipo);
