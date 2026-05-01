@@ -934,7 +934,7 @@ void parse_json(const char* json_string)
  *
  * @param friendly_id Human-readable claim code returned by the backend.
  */
-void draw_claim_screen(const char* friendly_id)
+void draw_claim_screen(const char* friendly_id, uint16_t sleep_minutes)
 {
     epaper->fillScreen(0xF);
     epaper->setTextColor(0x0);
@@ -956,7 +956,8 @@ void draw_claim_screen(const char* friendly_id)
     char textbuffer[AUTH_HEADER_MAX_LEN];
     snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
     epaper->drawString(textbuffer, 80, 370);
-    epaper->drawString("Checking again in 5 minutes...", 80, 430);
+    snprintf(textbuffer, sizeof(textbuffer), "Checking again in %u minutes...", sleep_minutes);
+    epaper->drawString(textbuffer, 80, 430);
 
     BB_RECT box{ .x = 0, .y = 0, .w = EPD_WIDTH, .h = EPD_HEIGHT };
     epaper->fullUpdate(true, false, &box);
@@ -1219,7 +1220,7 @@ void send_data_to_api()
         }
         ESP_LOGI(TAG, "Device not onboarded (HTTP %d). Claim ID: %s, retry in %d min",
                  status_code, res_friendly_id, nvs_minutes_till_refresh);
-        draw_claim_screen(res_friendly_id);
+        draw_claim_screen(res_friendly_id, nvs_minutes_till_refresh);
         schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
     } else {
         // Normal onboarded response: render analytics.
