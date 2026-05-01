@@ -943,7 +943,11 @@ void draw_claim_screen(const char* friendly_id)
     epaper->drawString("Claim your device", 100, 80);
 
     epaper->setFont(ubuntu20);
-    epaper->drawString("Visit sensoria.cat and enter your device ID:", 80, 160);
+    char url[140];
+    // Attention: Backend should validate this for C5 only using MAC and not anymore sensor_id
+    snprintf(url, sizeof(url), "Visit %s/welcome and enter your device ID:", WEB_HOST);
+
+    epaper->drawString(url, 80, 160);
 
     epaper->setFont(ubuntu40);
     epaper->drawString(friendly_id, 200, 260);
