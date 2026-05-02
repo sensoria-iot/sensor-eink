@@ -11,9 +11,6 @@
 #define EXTIO_LED_BLUE   (8+3)  // IO1_3 3 & 2 are swapped in schematics
 #define EXTIO_LED_GREEN  (8+2)  // IO1_2
 #define IO_BOOT_C5 GPIO_NUM_28
-// SENSOR ID (old API_KEY)
-char * nvs_sensor_id;
-size_t sensor_id_size;
 
 float firmware_version = 1.1;
 
@@ -181,6 +178,13 @@ char res_message[40];
 int16_t nvs_boots = 0;
 // Define the global MAC address variable
 char* mac_string;
+// Friendly ID returned by the backend when the device MAC is not yet onboarded
+#define FRIENDLY_ID_MAX_LEN 48
+// Authorization header value: "Bearer xx:xx:xx:xx:xx:xx" + null
+#define AUTH_HEADER_MAX_LEN 64
+// Default retry interval (minutes) when the backend does not supply sleep_minutes
+#define CLAIM_RETRY_MINUTES 10
+char res_friendly_id[FRIENDLY_ID_MAX_LEN] = {0};
 
 // EPD framebuffer
 uint8_t *fb;
@@ -521,7 +525,8 @@ static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_pa
 bool check_firmware_update(char* update_url, size_t url_size)
 {
     char url[256];
-    snprintf(url, sizeof(url), "http://%s/api/firmware/C5/%s", WEB_HOST, nvs_sensor_id);
+    // Attention: Backend should validate this for C5 only using MAC and not anymore sensor_id
+    snprintf(url, sizeof(url), "http://%s/api/firmware/C5/%s", WEB_HOST, mac_string);
     
     ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
     
@@ -744,10 +749,33 @@ static void rv3032_force_int_enable()
 
 void parse_json(const char* json_string)
 {
+    // Always clear these flags first so callers get a clean state even
+    // when cJSON_Parse() fails (e.g. plain-text "Unauthorised" body).
+    res_friendly_id[0] = '\0';
+    res_message[0] = '\0';
+
     // Parse the JSON string
     cJSON *root = cJSON_Parse(json_string);
     if (root == NULL) {
         printf("Error before: [%s]\n", cJSON_GetErrorPtr());
+        return;
+    }
+
+    // If the backend returns a friendly_id the device is not yet onboarded.
+    // Also read sleep_minutes so the backend can control the retry interval.
+    // Return early – the caller will handle the claim screen.
+    cJSON *fid = cJSON_GetObjectItem(root, "friendly_id");
+    if (cJSON_IsString(fid) && fid->valuestring != NULL) {
+        snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", fid->valuestring);
+        cJSON *sm = cJSON_GetObjectItem(root, "sleep_minutes");
+        if (cJSON_IsNumber(sm) && sm->valueint > 0) {
+            nvs_minutes_till_refresh = sm->valueint;
+        } else {
+            nvs_minutes_till_refresh = CLAIM_RETRY_MINUTES; // sensible default if field is missing
+        }
+        ESP_LOGI(TAG, "Device not onboarded. Friendly ID: %s, sleep: %d min",
+                 res_friendly_id, nvs_minutes_till_refresh);
+        cJSON_Delete(root);
         return;
     }
 
@@ -896,6 +924,43 @@ void parse_json(const char* json_string)
     }
     printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
     rv3032_force_int_enable();
+}
+
+/**
+ * @brief Display the "Claim your device" screen showing the friendly_id.
+ *
+ * Called when the backend returns a friendly_id instead of sensor analytics,
+ * meaning the device MAC has not yet been onboarded.
+ *
+ * @param friendly_id Human-readable claim code returned by the backend.
+ */
+void draw_claim_screen(const char* friendly_id, uint16_t sleep_minutes)
+{
+    epaper->fillScreen(0xF);
+    epaper->setTextColor(0x0);
+
+    epaper->setFont(ubuntu30);
+    epaper->drawString("Claim your device", 100, 80);
+
+    epaper->setFont(ubuntu20);
+    char url[140];
+    // Attention: Backend should validate this for C5 only using MAC and not anymore sensor_id
+    snprintf(url, sizeof(url), "Visit %s/welcome and enter your device ID:", WEB_HOST);
+
+    epaper->drawString(url, 80, 160);
+
+    epaper->setFont(ubuntu40);
+    epaper->drawString(friendly_id, 200, 260);
+
+    epaper->setFont(ubuntu20);
+    char textbuffer[AUTH_HEADER_MAX_LEN];
+    snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
+    epaper->drawString(textbuffer, 80, 370);
+    snprintf(textbuffer, sizeof(textbuffer), "Checking again in %u minutes...", sleep_minutes);
+    epaper->drawString(textbuffer, 80, 430);
+
+    BB_RECT box{ .x = 0, .y = 0, .w = EPD_WIDTH, .h = EPD_HEIGHT };
+    epaper->fullUpdate(true, false, &box);
 }
 
 /**
@@ -1114,15 +1179,21 @@ void send_data_to_api()
 
     printf("DATA: %s \nURL: %s\n", result.buf, API_URL);
     esp_http_client_handle_t client = esp_http_client_init(&config);
-
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    // Authorisation: Bearer MAC_ADDRESS – used by backend to identify the device.
+    // If the MAC is not yet registered the backend returns a JSON with a friendly_id.
+    char auth_header[AUTH_HEADER_MAX_LEN];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", mac_string);
+    esp_http_client_set_header(client, "Authorization", auth_header);
     esp_http_client_set_post_field(client, result.buf, strlen(result.buf));
     esp_err_t err = ESP_OK;
 
     err = esp_http_client_perform(client);
+    int status_code = 0;
     if (err == ESP_OK)
     {
-        ESP_LOGI(TAG, "HTTP POST Status = %d", esp_http_client_get_status_code(client));
+        status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "HTTP POST Status = %d", status_code);
     }
     else
     {
@@ -1130,10 +1201,31 @@ void send_data_to_api()
         schedule_rtc_wakeup_minutes(10);
     }
 
-    // Got a body - parse and draw
-    //ESP_LOG_BUFFER_CHAR(TAG, local_response_buffer, strlen(local_response_buffer));
+    // parse_json() will set res_friendly_id if the body contains a friendly_id field,
+    // or parse analytics fields if the device is already onboarded.
     parse_json(local_response_buffer);
-    draw_response_analisis(res_tipo);
+
+    // Detect unregistered device. The backend now always sends a proper JSON
+    // with a friendly_id field. HTTP 401 is kept as a belt-and-braces guard.
+    bool claim_pending = (status_code == 401) || (res_friendly_id[0] != '\0');
+
+    if (claim_pending) {
+        // If somehow no friendly_id came from the body, use the MAC so the
+        // user still has a reference to enter at sensoria.cat.
+        if (res_friendly_id[0] == '\0') {
+            snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", mac_string);
+            // nvs_minutes_till_refresh was already set by parse_json() from the
+            // backend's sleep_minutes field, or it holds the DEEP_SLEEP_MINUTES
+            // default – either is a reasonable retry interval.
+        }
+        ESP_LOGI(TAG, "Device not onboarded (HTTP %d). Claim ID: %s, retry in %d min",
+                 status_code, res_friendly_id, nvs_minutes_till_refresh);
+        draw_claim_screen(res_friendly_id, nvs_minutes_till_refresh);
+        schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
+    } else {
+        // Normal onboarded response: render analytics.
+        draw_response_analisis(res_tipo);
+    }
 
     // Clean up
     esp_http_client_cleanup(client);
@@ -1186,9 +1278,6 @@ static void qr_draw_task(void *arg)
             continue;
         }
 
-        // Defensive: ensure strings exist
-        const char *id = (nvs_sensor_id) ? nvs_sensor_id : "NO_ID";
-
         const int size = g_qr.size;
         const int sq = 5;
         const int x_offset = EPD_WIDTH - 260;
@@ -1217,7 +1306,7 @@ static void qr_draw_task(void *arg)
         snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
         epaper->drawString(textbuffer, 430, 160);
 
-        snprintf(textbuffer, sizeof(textbuffer), "%s", id);
+        snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
         epaper->drawString(textbuffer, 462, 310);
 
         snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
@@ -1600,7 +1689,8 @@ void build_request_json() {
         json_gen_obj_set_float(&jstr, "temperature", tem);
         json_gen_obj_set_float(&jstr, "humidity", hum);
         json_gen_push_object(&jstr, "client");
-        json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
+        // No more key here. Authentication: Bearer will be sent in the request
+        //json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
         json_gen_obj_set_string(&jstr, "rtc_t", rtc_time_str);
         json_gen_obj_set_string(&jstr, "model", "S3");
         json_gen_obj_set_float(&jstr, "version", firmware_version);
@@ -1876,10 +1966,6 @@ void app_main()
     {
         ESP_LOGE(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
     }
-    // Read stored SENSOR_ID
-    nvs_get_str(nvs_h, "sensor_id", NULL, &sensor_id_size);
-    nvs_sensor_id = (char*)malloc(sensor_id_size);
-    nvs_get_str(nvs_h, "sensor_id", nvs_sensor_id, &sensor_id_size);
 
     nvs_get_i16(nvs_h, "boots", &nvs_boots);
     ESP_LOGI(TAG, "-> NVS Boot count: %d", nvs_boots);
@@ -1887,14 +1973,7 @@ void app_main()
     // Set new value
     nvs_set_i16(nvs_h, "boots", nvs_boots);
     
-    if (strcmp(SENSOR_ID, "") == 0) {
-        printf("SENSOR_ID is empty reading it from NVS\n");
-    } else {
-        nvs_set_str(nvs_h, "sensor_id", SENSOR_ID);
-        strcpy(nvs_sensor_id, SENSOR_ID);
-    }
-    nvs_commit(nvs_h);
-    nvs_close(nvs_h);
+    // No more SENSOR ID let's use the MAC!
 
     // We read sensor here
     scd_read();
