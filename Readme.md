@@ -13,11 +13,16 @@ Attached by a QWIIC connector, with standard GND,VSS,SDA,SCL pins, there is a SC
 
 Just clone this repository and it's submodules:
 
-    git clone --recursive https://github.com/sensoria-iot/sensor-eink.git
+    git clone --recursive https://github.com/Sensoria-ai/sensor-eink-c5.git
+    idf.py build
 
+    (Target is already set to esp32-c5 and all the default settings prepared)
 And flash this code from root folder in your S3 PCB controller
 
     idf.py flash monitor
+
+IMPORTANT: If you are one of the early adopters it could be that your device MAC address is still not in our official list in the backend. If that is the case you will see an "Unauthorized" message in the display, please copy the MAC from the beginning of the serial log and send it to martin@sensoria.cat
+Every Firmware from now on is generic. And the signature is just the MAC address, there is no more sensor_id's flying to the sensoria API.
 
 ## On boarding and WiFi provision
 
