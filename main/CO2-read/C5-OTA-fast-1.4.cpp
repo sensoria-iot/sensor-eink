@@ -163,7 +163,7 @@ int res_confiable_bp_mensual = 1;
 int res_confiable_calidad = 1;
 int res_confiable_prediccion = 1;
 
-int res_ = 0;
+int res_bienestar_30 = 0;
 int res_bienestar_7 = 0;
 int res_tendencia_7d = 0;
 int res_tendencia_30d = 0;
@@ -788,7 +788,7 @@ void parse_json(const char* json_string)
     cJSON *confiable_prediccion = cJSON_GetObjectItem(root, "confiable_prediccion");
     cJSON *confiable_calidad = cJSON_GetObjectItem(root, "confiable_calidad");
 
-    cJSON * = cJSON_GetObjectItem(root, "");
+    cJSON *bienestar_30 = cJSON_GetObjectItem(root, "bienestar_30");
     cJSON *bienestar_7 = cJSON_GetObjectItem(root, "bienestar_7");
     cJSON *tendencia_7 = cJSON_GetObjectItem(root, "tendencia_7d");
     cJSON *tendencia_30 = cJSON_GetObjectItem(root, "tendencia_30d");
@@ -853,7 +853,7 @@ void parse_json(const char* json_string)
         res_confiable_calidad = confiable_calidad->valueint;
     }
 
-    if (cJSON_IsNumber(bienestar_7)) {
+    if (cJSON_IsNumber(bienestar_30)) {
         res_bienestar_7 = bienestar_7->valueint;
     }
     if (cJSON_IsNumber(bienestar_30)) {
