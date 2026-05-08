@@ -853,7 +853,7 @@ void parse_json(const char* json_string)
         res_confiable_calidad = confiable_calidad->valueint;
     }
 
-    if (cJSON_IsNumber(bienestar_30)) {
+    if (cJSON_IsNumber(bienestar_7)) {
         res_bienestar_7 = bienestar_7->valueint;
     }
     if (cJSON_IsNumber(bienestar_30)) {
