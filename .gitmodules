@@ -10,3 +10,6 @@
 [submodule "components/BQ27426_idf"]
 	path = components/BQ27426_idf
 	url = https://github.com/martinberlin/BQ27426_idf.git
+[submodule "components/bb_scd41"]
+	path = components/bb_scd41
+	url = https://github.com/bitbank2/bb_scd41.git
