@@ -31,7 +31,7 @@ FASTEPD epaper;
 #include "led_controller.h"
 
 
-//#define ADC_VOLTAGE_READ
+#define ADC_VOLTAGE_READ
 // BQ27426 fuel gauge (For next revision)
 #include "TiFuelGauge.h"
 TiFuelGauge TiFuel;
@@ -710,7 +710,7 @@ void parse_json(const char* json_string)
         res_confiable_calidad = confiable_calidad->valueint;
     }
 
-    if (cJSON_IsNumber(bienestar_30)) {
+    if (cJSON_IsNumber(res_bienestar_7)) {
         res_bienestar_7 = bienestar_7->valueint;
     }
     if (cJSON_IsNumber(bienestar_30)) {
@@ -1330,7 +1330,7 @@ void scd_read()
     scd4x_wake_up();
     scd4x_stop_periodic_measurement();
     scd4x_reinit();
-
+    scd4x_set_automatic_self_calibration(1);
     uint16_t serial_0;
     uint16_t serial_1;
     uint16_t serial_2;

@@ -9,10 +9,12 @@ set(app_sources "CO2-read/led_controller.c"
 # Only test I2C. RTC address is 0x51
 #set(app_sources "tools/i2cscan.c")
 #set(app_sources "historic/onlyRTC.cpp")
+#set(app_sources "recalibrate/sensoria_recalibrate.cpp")
 # 4 new small white PCB C3 
 set(app_requires  
                  fastepd
                  bb_rtc
+                 bb_scd41
                  BQ27426_idf
                  json
                  scd40      # sensor
