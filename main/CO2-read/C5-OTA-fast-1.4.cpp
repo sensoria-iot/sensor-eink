@@ -97,6 +97,7 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 #include "esp_tls.h"
 #include "esp_netif.h"
 #include "esp_http_client.h"
+#include "esp_wifi.h"
 
 // OTA
 #include "esp_ota_ops.h"
@@ -118,6 +119,11 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
     .qrcode_ecc_level = ESP_QRCODE_ECC_LOW, \
 }
 static TaskHandle_t qr_draw_task_handle = nullptr;
+
+/* Tracks how many times the already-provisioned STA has failed to connect since the
+ * last successful connection (or since boot).  Declared at file scope so that both
+ * the disconnect and connect branches of event_handler_rmk() can access it. */
+static int s_wifi_disconn_count = 0;
 
 static struct {
     int size;
@@ -1427,9 +1433,35 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper->drawString("Provisioning timed-out.", 10, 110);
                  epaper->drawString("< Press RESET and connect your device to USB-C", 10, 330);
                  epaper->drawString("The LED signal should be BLUE when it's ready >", 300, 490);
+                  epaper->fullUpdate();
+                  vTaskDelay(pdMS_TO_TICKS(500));
+                  schedule_rtc_wakeup_minutes(3);
+                  break;
+             }
+            case APP_NETWORK_EVENT_PROV_RESTART: {
+                 constexpr size_t kWifiSsidTextSize = sizeof(wifi_sta_config_t{}.ssid) + 1;
+                 wifi_config_t wifi_cfg = {};
+                 char ssid_text[kWifiSsidTextSize] = {0};
+                 esp_err_t wifi_err = esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
+
+                 status_led_off();
+                 if (wifi_err == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
+                     memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                     ssid_text[kWifiSsidTextSize - 1] = '\0';
+                     ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP: %s", ssid_text);
+                 } else {
+                     ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP");
+                 }
+
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+                 epaper->drawString("Can't connect to Wi-Fi AP", 10, 110);
+                 if (ssid_text[0] != '\0') {
+                     epaper->drawString(ssid_text, 10, 170);
+                 }
+                 epaper->drawString("Check SSID/password in ESP-RainMaker", 10, 230);
+                 epaper->drawString("RainMaker provisioning will retry", 10, 290);
                  epaper->fullUpdate();
                  vTaskDelay(pdMS_TO_TICKS(500));
-                 schedule_rtc_wakeup_minutes(3);
                  break;
             }
             default:
@@ -1465,6 +1497,46 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 status_led_off();
                 ESP_LOGW(TAG, "Unhandled OTA Event: %" PRIi32, event_id);
                 break;
+        }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        /* Reset the disconnect counter whenever a connection is established */
+        s_wifi_disconn_count = 0;
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* Safe: all handlers registered via esp_event_handler_register() are called
+         * sequentially from the single default-event-loop task. */
+        static constexpr int kWifiFailSleepMin = 5;
+        s_wifi_disconn_count++;
+        ESP_LOGW(TAG, "Wi-Fi STA disconnected (attempt %d)", s_wifi_disconn_count);
+
+        if (s_wifi_disconn_count == 3) {
+            /* Show a message on the display so the user can see the problem */
+            /* wifi_sta_config_t::ssid is 32 bytes without a guaranteed null terminator,
+             * so the display buffer is 33 bytes (32 + null) and we null-terminate explicitly. */
+            constexpr size_t kWifiSsidLen = sizeof(wifi_sta_config_t{}.ssid) + 1;
+            wifi_config_t wifi_cfg = {};
+            char ssid_text[kWifiSsidLen] = {0};
+            if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
+                memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                ssid_text[kWifiSsidLen - 1] = '\0';
+                ESP_LOGW(TAG, "Can't connect to Wi-Fi AP: %s", ssid_text);
+            }
+            status_led_off();
+            epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+            epaper->drawString("Can't connect to Wi-Fi", 20, 130);
+            if (ssid_text[0] != '\0') {
+                epaper->drawString(ssid_text, 20, 190);
+            }
+            epaper->drawString("Click RST and keep BOOT pressed", 20, 250);
+            epaper->drawString("To clear WiFi credentials and connect again", 20, 310);
+            epaper->fullUpdate();
+        } else if (s_wifi_disconn_count >= 6) {
+            /* Enough retries — sleep and try again after 3 minutes */
+            constexpr uint64_t kUsPerSecond = 1000000ULL;
+            ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 5 min.");
+            s_wifi_disconn_count = 0;
+            schedule_rtc_wakeup_minutes(kWifiFailSleepMin);
+            hold_pins_low_before_sleep();
+            esp_deep_sleep(kUsPerSecond * 60 * kWifiFailSleepMin);
         }
     } else {
         ESP_LOGW(TAG, "Invalid event received!");
@@ -2000,6 +2072,9 @@ void app_main()
     /* Register an event handler to catch RainMaker events */
     ESP_ERROR_CHECK(esp_event_handler_register(RMAKER_COMMON_EVENT, ESP_EVENT_ANY_ID, &event_handler_rmk, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(APP_NETWORK_EVENT, ESP_EVENT_ANY_ID, &event_handler_rmk, NULL));
+    /* Register Wi-Fi STA disconnect events so we can show a display message when the AP is unreachable */
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event_handler_rmk, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,    &event_handler_rmk, NULL));
     /* Initialize the ESP RainMaker Agent.
      * Note that this should be called after app_network_init() but before app_network_start()
      * */
@@ -2097,4 +2172,3 @@ void app_main()
     send_data_to_api();
     deep_sleep();
 }
-
