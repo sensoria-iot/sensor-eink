@@ -1510,6 +1510,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
 
         if (s_wifi_disconn_count == 3) {
             /* Show a message on the display so the user can see the problem */
+            /* wifi_sta_config_t::ssid is 32 bytes without a guaranteed null terminator,
+             * so the display buffer is 33 bytes (32 + null) and we null-terminate explicitly. */
             constexpr size_t kWifiSsidLen = sizeof(wifi_sta_config_t{}.ssid) + 1;
             wifi_config_t wifi_cfg = {};
             char ssid_text[kWifiSsidLen] = {0};
@@ -1524,16 +1526,17 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             if (ssid_text[0] != '\0') {
                 epaper->drawString(ssid_text, 10, 170);
             }
-            epaper->drawString("Check SSID / password in ESP-RainMaker", 10, 230);
+            epaper->drawString("Check Wi-Fi credentials in ESP-RainMaker", 10, 230);
             epaper->drawString("Will retry every 3 min.", 10, 290);
             epaper->fullUpdate();
         } else if (s_wifi_disconn_count >= 6) {
             /* Enough retries — sleep and try again after 3 minutes */
+            constexpr uint64_t kUsPerSecond = 1000000ULL;
             ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 3 min.");
             s_wifi_disconn_count = 0;
             schedule_rtc_wakeup_minutes(kWifiFailSleepMin);
             hold_pins_low_before_sleep();
-            esp_deep_sleep(1000000LL * 60 * kWifiFailSleepMin);
+            esp_deep_sleep(kUsPerSecond * 60 * kWifiFailSleepMin);
         }
     } else {
         ESP_LOGW(TAG, "Invalid event received!");
