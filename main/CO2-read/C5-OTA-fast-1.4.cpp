@@ -1441,7 +1441,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
 
                  status_led_off();
                  if (wifi_err == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
-                     memcpy(ssid_text, wifi_cfg.sta.ssid, kWifiSsidTextSize - 1);
+                     memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
                      ssid_text[kWifiSsidTextSize - 1] = '\0';
                      ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP: %s", ssid_text);
                  } else {
