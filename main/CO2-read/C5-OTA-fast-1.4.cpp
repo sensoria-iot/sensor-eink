@@ -1442,6 +1442,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  status_led_off();
                  if (wifi_err == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
                      memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                     ssid_text[kWifiSsidTextSize - 1] = '\0';
                      ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP: %s", ssid_text);
                  } else {
                      ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP");
@@ -1457,11 +1458,11 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper->fullUpdate();
                  vTaskDelay(pdMS_TO_TICKS(500));
                  break;
-             }
-             default:
-                 ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %" PRIi32, event_id);
-                 break;
-         }
+            }
+            default:
+                ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %" PRIi32, event_id);
+                break;
+        }
     } else if (event_base == RMAKER_OTA_EVENT) {
         switch(event_id) {
             case RMAKER_OTA_EVENT_STARTING:
