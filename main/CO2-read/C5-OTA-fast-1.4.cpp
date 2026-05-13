@@ -97,6 +97,7 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 #include "esp_tls.h"
 #include "esp_netif.h"
 #include "esp_http_client.h"
+#include "esp_wifi.h"
 
 // OTA
 #include "esp_ota_ops.h"
@@ -1343,9 +1344,7 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode)
     }
 }
 
-/* Event handler for catching RainMaker events 
-copilot: Is there a way to detect a "Can't connect to WiFi event?" I don't see any that can be triggered here
-*/
+/* Event handler for catching RainMaker events */
 static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
     if (event_base == RMAKER_EVENT) {
@@ -1429,15 +1428,40 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                  epaper->drawString("Provisioning timed-out.", 10, 110);
                  epaper->drawString("< Press RESET and connect your device to USB-C", 10, 330);
                  epaper->drawString("The LED signal should be BLUE when it's ready >", 300, 490);
+                  epaper->fullUpdate();
+                  vTaskDelay(pdMS_TO_TICKS(500));
+                  schedule_rtc_wakeup_minutes(3);
+                  break;
+             }
+            case APP_NETWORK_EVENT_PROV_RESTART: {
+                 wifi_config_t wifi_cfg = {};
+                 char ssid_text[sizeof(wifi_cfg.sta.ssid) + 1] = {0};
+                 esp_err_t wifi_err = esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
+
+                 status_led_off();
+                 if (wifi_err == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
+                     memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                     ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP: %s", ssid_text);
+                 } else {
+                     ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP");
+                 }
+
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+                 epaper->drawString("Can't connect to Wi-Fi AP", 10, 110);
+                 if (ssid_text[0] != '\0') {
+                     epaper->drawString(ssid_text, 10, 170);
+                 }
+                 epaper->drawString("Check SSID/password in ESP-RainMaker", 10, 230);
+                 epaper->drawString("Provisioning will restart automatically", 10, 290);
                  epaper->fullUpdate();
                  vTaskDelay(pdMS_TO_TICKS(500));
-                 schedule_rtc_wakeup_minutes(3);
                  break;
-            }
-            default:
-                ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %" PRIi32, event_id);
-                break;
-        }
+             }
+             default:
+                 ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %" PRIi32, event_id);
+                 break;
+         }
     } else if (event_base == RMAKER_OTA_EVENT) {
         switch(event_id) {
             case RMAKER_OTA_EVENT_STARTING:
@@ -2099,4 +2123,3 @@ void app_main()
     send_data_to_api();
     deep_sleep();
 }
-
