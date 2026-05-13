@@ -1527,7 +1527,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 epaper->drawString(ssid_text, 10, 170);
             }
             epaper->drawString("Check Wi-Fi credentials in ESP-RainMaker", 10, 230);
-            epaper->drawString("Will retry every 3 min.", 10, 290);
+            epaper->drawString("Will retry every 3 minutes.", 10, 290);
             epaper->fullUpdate();
         } else if (s_wifi_disconn_count >= 6) {
             /* Enough retries — sleep and try again after 3 minutes */
