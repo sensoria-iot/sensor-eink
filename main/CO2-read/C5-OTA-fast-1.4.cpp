@@ -1504,7 +1504,7 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         /* Safe: all handlers registered via esp_event_handler_register() are called
          * sequentially from the single default-event-loop task. */
-        static constexpr int kWifiFailSleepMin = 3;
+        static constexpr int kWifiFailSleepMin = 5;
         s_wifi_disconn_count++;
         ESP_LOGW(TAG, "Wi-Fi STA disconnected (attempt %d)", s_wifi_disconn_count);
 
@@ -1522,17 +1522,17 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             }
             status_led_off();
             epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
-            epaper->drawString("Can't connect to Wi-Fi AP", 10, 110);
+            epaper->drawString("Can't connect to Wi-Fi", 20, 130);
             if (ssid_text[0] != '\0') {
-                epaper->drawString(ssid_text, 10, 170);
+                epaper->drawString(ssid_text, 20, 190);
             }
-            epaper->drawString("Check Wi-Fi credentials in ESP-RainMaker", 10, 230);
-            epaper->drawString("Will retry every 3 minutes.", 10, 290);
+            epaper->drawString("Click RST and keep BOOT pressed", 20, 250);
+            epaper->drawString("To clear WiFi credentials and connect again", 20, 310);
             epaper->fullUpdate();
         } else if (s_wifi_disconn_count >= 6) {
             /* Enough retries — sleep and try again after 3 minutes */
             constexpr uint64_t kUsPerSecond = 1000000ULL;
-            ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 3 min.");
+            ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 5 min.");
             s_wifi_disconn_count = 0;
             schedule_rtc_wakeup_minutes(kWifiFailSleepMin);
             hold_pins_low_before_sleep();
