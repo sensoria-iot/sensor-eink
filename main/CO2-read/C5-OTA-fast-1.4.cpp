@@ -12,7 +12,7 @@
 #define EXTIO_LED_GREEN  (8+2)  // IO1_2
 #define IO_BOOT_C5 GPIO_NUM_28
 
-float firmware_version = 1.1;
+float firmware_version = 1.11;
 
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
