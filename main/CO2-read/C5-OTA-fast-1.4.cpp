@@ -120,6 +120,11 @@ uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
 }
 static TaskHandle_t qr_draw_task_handle = nullptr;
 
+/* Tracks how many times the already-provisioned STA has failed to connect since the
+ * last successful connection (or since boot).  Declared at file scope so that both
+ * the disconnect and connect branches of event_handler_rmk() can access it. */
+static int s_wifi_disconn_count = 0;
+
 static struct {
     int size;
     // max version you configured is 10 => max module size is 57.
@@ -1493,15 +1498,17 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGW(TAG, "Unhandled OTA Event: %" PRIi32, event_id);
                 break;
         }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        /* Reset the disconnect counter whenever a connection is established */
+        s_wifi_disconn_count = 0;
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         /* Safe: all handlers registered via esp_event_handler_register() are called
          * sequentially from the single default-event-loop task. */
-        static int wifi_disconn_count = 0;
         static constexpr int kWifiFailSleepMin = 3;
-        wifi_disconn_count++;
-        ESP_LOGW(TAG, "Wi-Fi STA disconnected (attempt %d)", wifi_disconn_count);
+        s_wifi_disconn_count++;
+        ESP_LOGW(TAG, "Wi-Fi STA disconnected (attempt %d)", s_wifi_disconn_count);
 
-        if (wifi_disconn_count == 3) {
+        if (s_wifi_disconn_count == 3) {
             /* Show a message on the display so the user can see the problem */
             constexpr size_t kWifiSsidLen = sizeof(wifi_sta_config_t{}.ssid) + 1;
             wifi_config_t wifi_cfg = {};
@@ -1520,10 +1527,10 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             epaper->drawString("Check SSID / password in ESP-RainMaker", 10, 230);
             epaper->drawString("Will retry every 3 min.", 10, 290);
             epaper->fullUpdate();
-        } else if (wifi_disconn_count >= 6) {
+        } else if (s_wifi_disconn_count >= 6) {
             /* Enough retries — sleep and try again after 3 minutes */
             ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 3 min.");
-            wifi_disconn_count = 0;
+            s_wifi_disconn_count = 0;
             schedule_rtc_wakeup_minutes(kWifiFailSleepMin);
             hold_pins_low_before_sleep();
             esp_deep_sleep(1000000LL * 60 * kWifiFailSleepMin);
@@ -2064,6 +2071,7 @@ void app_main()
     ESP_ERROR_CHECK(esp_event_handler_register(APP_NETWORK_EVENT, ESP_EVENT_ANY_ID, &event_handler_rmk, NULL));
     /* Register Wi-Fi STA disconnect events so we can show a display message when the AP is unreachable */
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event_handler_rmk, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,    &event_handler_rmk, NULL));
     /* Initialize the ESP RainMaker Agent.
      * Note that this should be called after app_network_init() but before app_network_start()
      * */
