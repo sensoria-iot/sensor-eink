@@ -1494,7 +1494,10 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 break;
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* Safe: all handlers registered via esp_event_handler_register() are called
+         * sequentially from the single default-event-loop task. */
         static int wifi_disconn_count = 0;
+        static constexpr int kWifiFailSleepMin = 3;
         wifi_disconn_count++;
         ESP_LOGW(TAG, "Wi-Fi STA disconnected (attempt %d)", wifi_disconn_count);
 
@@ -1521,9 +1524,9 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
             /* Enough retries — sleep and try again after 3 minutes */
             ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 3 min.");
             wifi_disconn_count = 0;
-            schedule_rtc_wakeup_minutes(3);
+            schedule_rtc_wakeup_minutes(kWifiFailSleepMin);
             hold_pins_low_before_sleep();
-            esp_deep_sleep(1000000LL * 60 * 3);
+            esp_deep_sleep(1000000LL * 60 * kWifiFailSleepMin);
         }
     } else {
         ESP_LOGW(TAG, "Invalid event received!");
