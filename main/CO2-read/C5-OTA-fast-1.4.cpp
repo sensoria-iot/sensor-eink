@@ -1343,7 +1343,9 @@ void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode)
     }
 }
 
-/* Event handler for catching RainMaker events */
+/* Event handler for catching RainMaker events 
+copilot: Is there a way to detect a "Can't connect to WiFi event?" I don't see any that can be triggered here
+*/
 static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
     if (event_base == RMAKER_EVENT) {
