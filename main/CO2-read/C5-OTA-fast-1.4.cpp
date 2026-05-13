@@ -1434,14 +1434,14 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                   break;
              }
             case APP_NETWORK_EVENT_PROV_RESTART: {
-                 constexpr size_t kWifiSsidTextSize = 33;
+                 constexpr size_t kWifiSsidTextSize = sizeof(wifi_sta_config_t{}.ssid) + 1;
                  wifi_config_t wifi_cfg = {};
                  char ssid_text[kWifiSsidTextSize] = {0};
                  esp_err_t wifi_err = esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
 
                  status_led_off();
                  if (wifi_err == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
-                     memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                     memcpy(ssid_text, wifi_cfg.sta.ssid, kWifiSsidTextSize - 1);
                      ssid_text[kWifiSsidTextSize - 1] = '\0';
                      ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP: %s", ssid_text);
                  } else {
