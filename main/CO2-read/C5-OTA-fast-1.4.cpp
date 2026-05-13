@@ -1434,8 +1434,9 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                   break;
              }
             case APP_NETWORK_EVENT_PROV_RESTART: {
+                 constexpr size_t kWifiSsidTextSize = 33;
                  wifi_config_t wifi_cfg = {};
-                 char ssid_text[sizeof(wifi_cfg.sta.ssid) + 1] = {0};
+                 char ssid_text[kWifiSsidTextSize] = {0};
                  esp_err_t wifi_err = esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
 
                  status_led_off();
