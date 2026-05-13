@@ -1446,14 +1446,13 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                      ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP");
                  }
 
-                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
                  epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
                  epaper->drawString("Can't connect to Wi-Fi AP", 10, 110);
                  if (ssid_text[0] != '\0') {
                      epaper->drawString(ssid_text, 10, 170);
                  }
                  epaper->drawString("Check SSID/password in ESP-RainMaker", 10, 230);
-                 epaper->drawString("Provisioning will restart automatically", 10, 290);
+                 epaper->drawString("RainMaker provisioning will retry", 10, 290);
                  epaper->fullUpdate();
                  vTaskDelay(pdMS_TO_TICKS(500));
                  break;
