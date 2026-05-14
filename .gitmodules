@@ -13,3 +13,6 @@
 [submodule "components/scd40"]
 	path = components/scd40
 	url = https://github.com/martinberlin/scd4x-idf-i2cmaster
+[submodule "components/FastJsonDL"]
+	path = components/FastJsonDL
+	url = https://github.com/martinberlin/FastJsonDL.git
