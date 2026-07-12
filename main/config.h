@@ -9,9 +9,12 @@
 #define FORCE_WIFI_RESET 0
 
 #define WEB_PORT "80"
-#define WEB_HOST "sensoria.cat" // dev.
-
+#define WEB_HOST "dev.sensoria.cat" // dev.
+// Deprecated API URL
 #define API_URL  "http://" WEB_HOST "/api/scd40/log"
+
+#define API_DL_LOG       "http://" WEB_HOST "/api/dl/log"
+#define API_DL_PLAYLIST  "http://" WEB_HOST "/api/dl/playlist"
 
 const char * not_trustworthy = "NOT TRUSTWORTHY";
 

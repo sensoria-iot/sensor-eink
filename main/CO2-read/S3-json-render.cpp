@@ -1,0 +1,1976 @@
+// Edit your API setup and general configuration options:
+#include "../config.h"
+// No more legacy I2C driver
+#include "esp_mac.h"
+#include "esp_heap_caps.h"
+#include "i2c_bus.h"
+// INTERRUPT
+#define RTC_INT_GPIO GPIO_NUM_1
+// --- Status LED via PCA9535 (through FastEPD external IO) ---
+// PCA9535 mapping used by BitBank-style ext-IO is typically: P0_0..P0_7 => 0..7, P1_0..P1_7 => 8..15
+// C5 schematic: LED_BLUE = IO1_2, LED_GREEN = IO1_3
+#define EXTIO_LED_BLUE   (8+3)  // IO1_3 3 & 2 are swapped in schematics
+#define EXTIO_LED_GREEN  (8+2)  // IO1_2
+#define IO_BOOT_C5 GPIO_NUM_28
+
+float firmware_version = 1.12; //1.11 is last version let's keep it higher so it doesn't update!
+
+// Declare ASCII names for each of the supported RTC types
+const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
+// RTC Alarm
+volatile bool rtc_alarm_triggered = false;
+uint8_t alarm_day = 0;
+uint8_t alarm_hour = 0;
+uint8_t alarm_min = 0;
+
+// FastEPD component:
+#include "FastEPD.cpp"
+static FASTEPD *epaper = nullptr;
+
+// Dotstar 2812 LED in the strip. TO be replaced by RGB LED with 3 IOs going to PCA9535 
+//#include "led_controller.h"
+
+// BQ27426 fuel gauge (For next revision)
+#include "TiFuelGauge.h"
+TiFuelGauge TiFuel;
+int batt_level = 0;
+
+// Fonts
+#include "fast/ubuntu12.h"
+#include "fast/ubuntu20.h"
+#include "fast/ubuntu30.h"
+#include "fast/ubuntu40.h"
+// FastJsonDL: server-driven rendering
+#include "FastJsonDL.h"
+static FastJsonDL *dl = nullptr;
+static const FastJsonDLFont g_fonts[] = {
+    { "Ubuntu20", ubuntu20 },
+    { "Ubuntu30", ubuntu30 },
+    { "Ubuntu40", ubuntu40 },
+};
+static const char *TAG = "CO2_ST";
+// Rainmaker
+//#include <esp_rmaker_console.h>
+#include <esp_rmaker_core.h>
+#include <esp_rmaker_standard_params.h>
+#include <esp_rmaker_standard_devices.h>
+#include <esp_rmaker_schedule.h>
+#include <esp_rmaker_console.h>
+#include <esp_rmaker_scenes.h>
+#include <esp_rmaker_utils.h>
+#include <esp_rmaker_ota.h>
+#include <esp_rmaker_common_events.h>
+#include <app_network.h>
+#include <qrcode.h>
+#define DEVICE_PARAM_WIFI_RESET "Turn slider to 100 to reset WiFi"
+#define LOW_BATT_ALERT 20
+#include <math.h>  // roundf
+// Non-Volatile Storage (NVS) - borrrowed from esp-idf/examples/storage/nvs_rw_value
+#include "nvs_flash.h"
+#include "nvs.h"
+// Values that will be stored in NVS - defaults here
+nvs_handle_t nvs_h;
+uint16_t nvs_minutes_till_refresh = DEEP_SLEEP_MINUTES;
+
+// General libs
+#include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
+#include <sys/param.h>
+#include <stdlib.h>
+#include <ctype.h>
+// ESP + FreeRTOS
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_timer.h"
+#include "esp_system.h"
+#include "esp_event.h"
+#include "esp_attr.h"
+#include "esp_sleep.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+// WIFI
+#include "esp_tls.h"
+#include "esp_netif.h"
+#include "esp_http_client.h"
+#include "esp_wifi.h"
+
+// OTA
+#include "esp_ota_ops.h"
+#include "esp_https_ota.h"
+#include "esp_app_format.h"
+
+// RTC
+#include <bb_rtc.h>
+
+// SCD4x
+#include "scd4x_i2c.h"
+#include "sensirion_common.h"
+#include "sensirion_i2c_hal.h"
+#define DARKMODE false
+// QR handling
+#define ESP_QRCODE_SENSORIA() (esp_qrcode_config_t) { \
+    .display_func = esp_qrcode_print_eink, \
+    .max_qrcode_version = 10, \
+    .qrcode_ecc_level = ESP_QRCODE_ECC_LOW, \
+}
+static TaskHandle_t qr_draw_task_handle = nullptr;
+
+/* Tracks how many times the already-provisioned STA has failed to connect since the
+ * last successful connection (or since boot).  Declared at file scope so that both
+ * the disconnect and connect branches of event_handler_rmk() can access it. */
+static int s_wifi_disconn_count = 0;
+
+static struct {
+    int size;
+    // max version you configured is 10 => max module size is 57.
+    // allocate enough for 57x57. store 0/1 per module.
+    uint8_t modules[57 * 57];
+    volatile bool pending;
+} g_qr = {};
+// end of QR
+
+bool ready_to_measure = false;
+bool measure_taken = false;
+
+uint16_t co2 = 0;
+float tem = 0;
+float hum = 0;
+
+BBRTC rtc;
+uint8_t rtc_day = 0;
+//#include <app_insights.h>
+esp_rmaker_device_t *temp_sensor_device;
+
+// IP
+char esp_ip[16];
+
+// JSON Tools
+#include "cJSON.h"
+#include <json_generator.h>
+typedef struct
+{
+    char buf[512];
+    size_t offset;
+} json_gen_test_result_t;
+json_gen_test_result_t result;
+static char *output_buffer; // Buffer to store response of http request from event handler
+
+// Draw commands received from the server (a JSON array string).
+// Must stay comfortably below MAX_HTTP_OUTPUT_BUFFER (the remaining bytes are
+// consumed by the outer JSON fields: status, alarm, datetime, sleep_minutes…).
+#define MAX_DRAW_JSON_LEN 4400
+//static_assert(MAX_DRAW_JSON_LEN < MAX_HTTP_OUTPUT_BUFFER,
+//              "MAX_DRAW_JSON_LEN must fit inside the HTTP receive buffer");
+static char res_draw_json[MAX_DRAW_JSON_LEN] = {0};
+
+// Flag to know that how many times the device booted
+int16_t nvs_boots = 0;
+// Define the global MAC address variable
+char* mac_string;
+// Friendly ID returned by the backend when the device MAC is not yet onboarded
+#define FRIENDLY_ID_MAX_LEN 48
+// Authorization header value: "Bearer xx:xx:xx:xx:xx:xx" + null
+#define AUTH_HEADER_MAX_LEN 64
+// Default retry interval (minutes) when the backend does not supply sleep_minutes
+#define CLAIM_RETRY_MINUTES 10
+char res_friendly_id[FRIENDLY_ID_MAX_LEN] = {0};
+
+// EPD framebuffer
+uint8_t *fb;
+// RTC Time
+struct tm RTCTime;
+
+extern "C"
+{
+    void app_main();
+}
+
+// --- BOOT button -> SCD40 calibration mode ---
+static TaskHandle_t calib_task_handle = nullptr;
+static volatile uint32_t s_last_btn_us = 0;
+
+static volatile bool s_calib_mode = false;       // waiting for 2nd press
+static volatile bool s_calib_run_requested = false;
+static uint32_t s_last_click_us = 0;
+static uint8_t  s_click_count = 0;
+
+static const uint32_t CLICK_DEBOUNCE_US = 80 * 1000;      // 80ms
+static const uint32_t DOUBLECLICK_US    = 500 * 1000;     // 500ms window
+
+static void IRAM_ATTR boot_btn_isr(void *arg)
+{
+    (void)arg;
+    const uint32_t now = (uint32_t)esp_timer_get_time();
+    // crude debounce: 300ms
+    if ((now - s_last_btn_us) < 300000) return;
+    s_last_btn_us = now;
+
+    if (calib_task_handle) {
+        BaseType_t hp = pdFALSE;
+        vTaskNotifyGiveFromISR(calib_task_handle, &hp);
+        if (hp) portYIELD_FROM_ISR();
+    }
+}
+
+static void boot_button_interrupt_init()
+{
+    // Configure as input (GPIO28 has internal pull-up per your schematic note; still safe to keep pull-up disabled)
+    gpio_config_t io = {};
+    io.intr_type = GPIO_INTR_NEGEDGE; // falling edge
+    io.mode = GPIO_MODE_INPUT;
+    io.pin_bit_mask = 1ULL << IO_BOOT_C5;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    ESP_ERROR_CHECK(gpio_config(&io));
+
+    // ISR service install (safe to call once; if already installed returns ESP_ERR_INVALID_STATE sometimes)
+    esp_err_t e = gpio_install_isr_service(0);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(e);
+    }
+    ESP_ERROR_CHECK(gpio_isr_handler_add(IO_BOOT_C5, boot_btn_isr, nullptr));
+}
+
+// LED Management using IO expender (only G & B)
+static inline uint8_t led_level(bool on)
+{
+    return on ? 1 : 0;
+}
+
+static void status_led_init()
+{
+    // Must be called after epaper->initPanel(...) because pfnExtIO is set by the panel/board init.
+    bbepPCA9535PinMode(EXTIO_LED_GREEN, OUTPUT);
+    bbepPCA9535PinMode(EXTIO_LED_BLUE, OUTPUT);
+    //epaper->ioPinMode(EXTIO_LED_BLUE,  BB_EXTIO_WRITE);
+
+    // Off by default
+    bbepPCA9535DigitalWrite(EXTIO_LED_GREEN, led_level(false));
+    bbepPCA9535DigitalWrite(EXTIO_LED_BLUE, led_level(false));
+    //epaper->ioWrite(EXTIO_LED_BLUE,  led_level(false));
+}
+
+static inline void status_led_set(bool green_on, bool blue_on)
+{
+    bbepPCA9535DigitalWrite(EXTIO_LED_GREEN, led_level(green_on));
+    bbepPCA9535DigitalWrite(EXTIO_LED_BLUE, led_level(blue_on));
+}
+
+// Convenience presets
+static inline void status_led_off()   { status_led_set(false, false); }
+static inline void status_led_green() { status_led_set(true,  false); }
+static inline void status_led_blue()  { status_led_set(false, true);  }
+static inline void status_led_cyan()  { status_led_set(true,  true);  }
+
+
+
+void deep_sleep()
+{
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    printf("Powering OFF. Waking up from IO1 (Low on RTC alarm)\n");
+    esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);
+}
+
+static void rtc_int_gpio_init()
+{
+    gpio_config_t io = {};
+    io.intr_type = GPIO_INTR_DISABLE;
+    io.mode = GPIO_MODE_INPUT;
+    io.pin_bit_mask = 1ULL << RTC_INT_GPIO;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;   // you already have external 10k pull-up
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    ESP_ERROR_CHECK(gpio_config(&io));
+}
+
+/**
+ * @brief Fetch and return the Microchip MAC address as a formatted string.
+ * 
+ * This function retrieves the base MAC address from EFUSE and formats it
+ * as a hexadecimal string for use in JSON or other text-based protocols.
+ * 
+ * @return A dynamically allocated C-string with the formatted MAC address in the format "xx:xx:xx:xx:xx:xx".
+ *         Caller is responsible for freeing the memory.
+ */
+char* getFormattedMacAddress()
+{
+    uint8_t base_mac_addr[6] = {0};
+    esp_err_t ret = esp_read_mac(base_mac_addr, ESP_MAC_EFUSE_FACTORY);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to read base MAC address (error: %s)", esp_err_to_name(ret));
+        return nullptr;
+    }
+
+    ESP_LOGI(TAG, "Base MAC Address fetched successfully: 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x",
+             base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
+             base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
+
+    // Allocate memory for the formatted MAC address string
+    // Example: "aa:bb:cc:dd:ee:ff" (17 characters + null terminator)
+    char* mac_string = (char*) malloc(18 * sizeof(char));
+    if (!mac_string)
+    {
+        ESP_LOGE(TAG, "Failed to allocate memory for MAC address string");
+        return nullptr;
+    }
+
+    // Format the MAC address as a string
+    sprintf(mac_string, "%02x:%02x:%02x:%02x:%02x:%02x",
+            base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
+            base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
+
+    ESP_LOGI(TAG, "Formatted MAC Address: %s", mac_string);
+    return mac_string;
+}
+
+// Event handler for HTTP requests
+esp_err_t _http_event_handler(esp_http_client_event_t *evt)
+{
+    static int output_len;      // Stores number of bytes read
+    switch (evt->event_id)
+    {
+
+    case HTTP_EVENT_ERROR:
+        ESP_LOGD(TAG, "HTTP_EVENT_ERROR");
+        break;
+
+    case HTTP_EVENT_ON_CONNECTED:
+        ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
+        output_len = 0;  // Reset for new request
+        break;
+
+    case HTTP_EVENT_HEADER_SENT:
+        ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
+        break;
+
+    case HTTP_EVENT_ON_HEADER:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
+        break;
+
+    case HTTP_EVENT_ON_DATA: 
+    {
+        ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
+        ESP_LOG_BUFFER_CHAR(TAG, evt->data, evt->data_len);
+         if (output_len == 0 && evt->user_data) {
+                // NOTE: This assumes user_data buffer is at least MAX_HTTP_OUTPUT_BUFFER bytes
+                // Clear only what we need for the response
+                ESP_LOGI(TAG, "Clearing user_data buffer");
+                memset(evt->user_data, 0, MAX_HTTP_OUTPUT_BUFFER);
+            }
+            
+            // Copy data to buffer (handle both chunked and non-chunked)
+            int copy_len = 0;
+            if (evt->user_data) {
+                // User provided buffer - copy data regardless of chunked encoding
+                copy_len = MIN(evt->data_len, (MAX_HTTP_OUTPUT_BUFFER - output_len));
+                if (copy_len) {
+                    ESP_LOGI(TAG, "Copying %d bytes to user_data at offset %d", copy_len, output_len);
+                    // C++ forbids pointer arithmetic on void*
+                    memcpy((uint8_t *)evt->user_data + output_len, evt->data, copy_len);
+                }
+                output_len += copy_len;
+                ESP_LOGI(TAG, "Total output_len now: %d", output_len);
+            } else if (!esp_http_client_is_chunked_response(evt->client)) {
+                // Global buffer - only for non-chunked (legacy behavior)
+                ESP_LOGI(TAG, "No user_data, using global output_buffer");
+                int content_len = esp_http_client_get_content_length(evt->client);
+                copy_len = MIN(evt->data_len, (content_len - output_len));
+                if (copy_len) {
+                    memcpy((uint8_t *)output_buffer + output_len, evt->data, copy_len);
+                }
+                output_len += copy_len;
+            }
+
+            break;
+        }
+
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_FINISH");
+        if (output_buffer != NULL)
+        {
+            // Response is accumulated in output_buffer. Uncomment the below line to print the accumulated response
+            // ESP_LOG_BUFFER_HEX(TAG, output_buffer, output_len);
+            free(output_buffer);
+            output_buffer = NULL;
+        }
+        output_len = 0;
+        break;
+
+    case HTTP_EVENT_DISCONNECTED:
+    {
+        ESP_LOGI(TAG, "HTTP_EVENT_DISCONNECTED");
+        int mbedtls_err = 0;
+        esp_err_t err = esp_tls_get_and_clear_last_error((esp_tls_error_handle_t)evt->data, &mbedtls_err, NULL);
+        if (err != 0)
+        {
+            ESP_LOGI(TAG, "Last esp error code: 0x%x", err);
+            ESP_LOGI(TAG, "Last mbedtls failure: 0x%x", mbedtls_err);
+        }
+        if (output_buffer != NULL)
+        {
+            free(output_buffer);
+            output_buffer = NULL;
+        }
+        output_len = 0;
+        break;
+    }
+
+    case HTTP_EVENT_REDIRECT:
+    {
+        ESP_LOGD(TAG, "HTTP_EVENT_REDIRECT");
+        esp_http_client_set_header(evt->client, "Accept", "text/html");
+        esp_http_client_set_redirection(evt->client);
+        break;
+    }
+    }
+    return ESP_OK;
+}
+
+struct HttpBuffer {
+    uint8_t *data;
+    int len;
+    int max_len;
+};
+
+esp_err_t _playlist_http_event_handler(esp_http_client_event_t *evt)
+{
+    switch (evt->event_id)
+    {
+    case HTTP_EVENT_ERROR:
+        ESP_LOGD(TAG, "Playlist HTTP_EVENT_ERROR");
+        break;
+
+    case HTTP_EVENT_ON_CONNECTED:
+        ESP_LOGI(TAG, "Playlist HTTP_EVENT_ON_CONNECTED");
+        if (evt->user_data) {
+            HttpBuffer *buf = (HttpBuffer *)evt->user_data;
+            buf->len = 0;
+        }
+        break;
+
+    case HTTP_EVENT_HEADER_SENT:
+        ESP_LOGI(TAG, "Playlist HTTP_EVENT_HEADER_SENT");
+        break;
+
+    case HTTP_EVENT_ON_HEADER:
+        ESP_LOGD(TAG, "Playlist HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
+        break;
+
+    case HTTP_EVENT_ON_DATA:
+    {
+        ESP_LOGI(TAG, "Playlist HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
+        if (evt->user_data) {
+            HttpBuffer *buf = (HttpBuffer *)evt->user_data;
+            int copy_len = MIN(evt->data_len, (buf->max_len - buf->len));
+            if (copy_len > 0) {
+                ESP_LOGI(TAG, "Copying %d bytes to user_data at offset %d", copy_len, buf->len);
+                memcpy(buf->data + buf->len, evt->data, copy_len);
+                buf->len += copy_len;
+            }
+            ESP_LOGI(TAG, "Total playlist output_len now: %d", buf->len);
+        }
+        break;
+    }
+
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGD(TAG, "Playlist HTTP_EVENT_ON_FINISH");
+        break;
+
+    case HTTP_EVENT_DISCONNECTED:
+    {
+        ESP_LOGI(TAG, "Playlist HTTP_EVENT_DISCONNECTED");
+        int mbedtls_err = 0;
+        esp_err_t err = esp_tls_get_and_clear_last_error((esp_tls_error_handle_t)evt->data, &mbedtls_err, NULL);
+        if (err != 0)
+        {
+            ESP_LOGI(TAG, "Playlist last esp error code: 0x%x", err);
+            ESP_LOGI(TAG, "Playlist last mbedtls failure: 0x%x", mbedtls_err);
+        }
+        break;
+    }
+
+    case HTTP_EVENT_REDIRECT:
+    {
+        ESP_LOGD(TAG, "Playlist HTTP_EVENT_REDIRECT");
+        esp_http_client_set_redirection(evt->client);
+        break;
+    }
+    }
+    return ESP_OK;
+}
+
+/* Callback to handle commands received from the RainMaker cloud */
+static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_param_t *param,
+                          const esp_rmaker_param_val_t val, void *priv_data, esp_rmaker_write_ctx_t *ctx)
+{
+    if (ctx)
+    {
+        ESP_LOGI(TAG, "Received write request via : %s", esp_rmaker_device_cb_src_to_str(ctx->src));
+    }
+    const char *device_name = esp_rmaker_device_get_name(device);
+    const char *param_name = esp_rmaker_param_get_name(param);
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0)
+    {
+        ESP_LOGI(TAG, "Received value = %s for %s - %s",
+                 val.val.b ? "true" : "false", device_name, param_name);
+        if (val.val.b == false)
+        {
+            deep_sleep();
+        }
+    }
+
+    else if (strcmp(param_name, DEVICE_PARAM_WIFI_RESET) == 0)
+    {
+        ESP_LOGI(TAG, "%d for %s-%s",
+                 (int)val.val.i, device_name, param_name);
+        if (val.val.i == 100)
+        {
+            printf("Reseting WiFi credentials. Please reprovision your device\n\n");
+            esp_rmaker_wifi_reset(1, 10);
+        }
+    }
+    else
+    {
+        /* Silently ignoring invalid params */
+        return ESP_OK;
+    }
+    esp_rmaker_param_update_and_report(param, val);
+    return ESP_OK;
+}
+
+/**
+ * @brief Check for firmware updates from the API
+ * 
+ * Makes a GET request to the firmware version endpoint and compares
+ * with the current firmware version.
+ * 
+ * @return true if a newer version is available, false otherwise
+ */
+bool check_firmware_update(char* update_url, size_t url_size)
+{
+    char url[256];
+    // Attention: Backend should validate this for C5 only using MAC and not anymore sensor_id
+    snprintf(url, sizeof(url), "http://%s/api/firmware/C5/%s", WEB_HOST, mac_string);
+    
+    ESP_LOGI(TAG, "Checking for firmware updates at: %s", url);
+    
+    // Allocate response buffer on heap to avoid stack overflow
+    char *local_response_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (local_response_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+        return false;
+    }
+    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 5000,
+        .event_handler = _http_event_handler,
+        .user_data = local_response_buffer,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize HTTP client");
+        free(local_response_buffer);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "HTTP client initialized, performing request...");
+    esp_err_t err = esp_http_client_perform(client);
+    ESP_LOGI(TAG, "HTTP client perform returned: %s", esp_err_to_name(err));
+    
+    bool update_available = false;
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Getting status code from client handle: %p", (void*)client);
+        int status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "Firmware check HTTP Status = %d", status_code);
+        
+        if (status_code == 200) {
+            ESP_LOGI(TAG, "Response: %s", local_response_buffer);
+            
+            // Parse JSON response
+            cJSON *root = cJSON_Parse(local_response_buffer);
+            if (root != NULL) {
+                cJSON *version = cJSON_GetObjectItem(root, "version");
+                cJSON *status = cJSON_GetObjectItem(root, "status");
+                cJSON *path = cJSON_GetObjectItem(root, "path");
+                
+                if (cJSON_IsNumber(version) && cJSON_IsString(status) && cJSON_IsString(path)) {
+                    float available_version = version->valuedouble;
+                    
+                    ESP_LOGI(TAG, "Current firmware: %.2f, Available: %.2f", 
+                             firmware_version, available_version);
+                    
+                    if (available_version > firmware_version && 
+                        strcmp(status->valuestring, "OK") == 0) {
+                        // Copy the download URL
+                        snprintf(update_url, url_size, "%s", path->valuestring);
+                        update_available = true;
+                        ESP_LOGI(TAG, "New firmware available! Version %.2f at %s", 
+                                 available_version, update_url);
+                    } else {
+                        ESP_LOGI(TAG, "Firmware is up to date");
+                    }
+                }
+                cJSON_Delete(root);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "Firmware check failed: %s", esp_err_to_name(err));
+    }
+    
+    esp_http_client_cleanup(client);
+    free(local_response_buffer);
+    return update_available;
+}
+
+/**
+ * @brief Perform OTA firmware update
+ * 
+ * Downloads and installs the new firmware from the specified URL.
+ * The device will restart automatically after successful update.
+ * 
+ * @param url The URL to download the firmware from
+ * @return ESP_OK on success
+ */
+esp_err_t perform_ota_update(const char* url)
+{
+    ESP_LOGI(TAG, "Starting OTA update from: %s", url);
+    
+    esp_http_client_config_t ota_config = {
+        .url = url,
+        .timeout_ms = 30000,
+        .skip_cert_common_name_check = true,  // Allow HTTP without certificate verification
+        .keep_alive_enable = true,
+    };
+    
+    esp_https_ota_config_t ota_https_config = {
+        .http_config = &ota_config,
+    };
+    
+    esp_err_t ret = esp_https_ota(&ota_https_config);
+    
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA update successful! Restarting...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
+    } else {
+        ESP_LOGE(TAG, "OTA update failed: %s", esp_err_to_name(ret));
+    }
+    
+    return ret;
+}
+
+/**
+ * @brief Check and perform OTA update if available
+ * 
+ * This function should be called once per day when the RTC alarm
+ * indicates a day change has occurred.
+ */
+void check_and_update_firmware()
+{
+    ESP_LOGI(TAG, "Checking for firmware updates (once per day)...");
+    
+    char update_url[256] = {0};
+    
+    if (check_firmware_update(update_url, sizeof(update_url))) {
+        ESP_LOGI(TAG, "Update available, starting download...");
+        
+        // Show update message on display
+        epaper->setFont(ubuntu30);
+        char textbuffer[60];
+        snprintf(textbuffer, sizeof(textbuffer), "Updating firmware...");
+        epaper->drawString(textbuffer, 200, EPD_HEIGHT/2 - 50);
+        epaper->fullUpdate(true, false);
+        
+        // Perform the update
+        esp_err_t ret = perform_ota_update(update_url);
+        
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to perform OTA update");
+            // Show error on display
+            snprintf(textbuffer, sizeof(textbuffer), "Update failed!");
+            epaper->drawString(textbuffer, 200, EPD_HEIGHT/2);
+            epaper->fullUpdate(true, false);
+        }
+        // If successful, device will restart, so we never reach here
+    } else {
+        ESP_LOGI(TAG, "No firmware update available");
+    }
+}
+
+static void rv3032_force_int_enable()
+{
+    i2c_master_dev_handle_t dev = i2c_bus_get_dev(0x51, 100000);
+    if (!dev) return;
+
+    auto wr = [&](uint8_t reg, uint8_t val) {
+        uint8_t b[2] = {reg, val};
+        ESP_ERROR_CHECK(i2c_master_transmit(dev, b, 2, 1000));
+    };
+    auto rd1 = [&](uint8_t reg) -> uint8_t {
+        uint8_t v = 0;
+        ESP_ERROR_CHECK(i2c_master_transmit_receive(dev, &reg, 1, &v, 1, 1000));
+        return v;
+    };
+
+    uint8_t c1 = rd1(0x10);
+    uint8_t c2 = rd1(0x11);
+
+    // Clear any pending flags
+    wr(0x0D, 0x00);
+
+    // Try enabling alarm interrupt without destroying other bits
+    // (Exact bits depend on RV3032 config; this is an experimental “turn it on”)
+    c1 &= (uint8_t)~0x08;      // ensure countdown off (library already does this)
+    wr(0x10, c1);
+
+    c2 |= 0x08;               // library’s intended “time interrupt enable”
+    wr(0x11, c2);
+}
+
+/**
+ * @brief Parses the JSON response from the Sensoria API.
+ *
+ * Extracts: friendly_id (unclaimed device), sleep_minutes, alarm, datetime,
+ * and the "draw" field — a JSON array string that FastJsonDL will render.
+ */
+struct LogResponse {
+    int onboarded; // -1 if not parsed, 0 if not onboarded, 1 if onboarded
+    char friendly_id[FRIENDLY_ID_MAX_LEN];
+    int sleep_minutes;
+    struct tm alarm;
+    struct tm datetime;
+    bool has_alarm;
+    bool has_datetime;
+};
+
+bool parse_log_response(const char* json_string, LogResponse& out)
+{
+    memset(&out, 0, sizeof(LogResponse));
+    out.onboarded = -1;
+
+    cJSON *root = cJSON_Parse(json_string);
+    if (root == NULL) {
+        printf("JSON parse error before: [%s]\n", cJSON_GetErrorPtr());
+        return false;
+    }
+
+    cJSON *onb = cJSON_GetObjectItem(root, "onboarded");
+    if (cJSON_IsNumber(onb)) {
+        out.onboarded = onb->valueint;
+    }
+
+    cJSON *fid = cJSON_GetObjectItem(root, "friendly_id");
+    if (cJSON_IsString(fid) && fid->valuestring != NULL) {
+        snprintf(out.friendly_id, sizeof(out.friendly_id), "%s", fid->valuestring);
+    }
+
+    cJSON *sm = cJSON_GetObjectItem(root, "sleep_minutes");
+    if (cJSON_IsNumber(sm)) {
+        out.sleep_minutes = sm->valueint;
+    } else {
+        out.sleep_minutes = CLAIM_RETRY_MINUTES;
+    }
+
+    cJSON *alarm = cJSON_GetObjectItem(root, "alarm");
+    if (alarm) {
+        cJSON *day  = cJSON_GetObjectItem(alarm, "day");
+        cJSON *mo   = cJSON_GetObjectItem(alarm, "mo");
+        cJSON *year = cJSON_GetObjectItem(alarm, "year");
+        cJSON *hr   = cJSON_GetObjectItem(alarm, "hr");
+        cJSON *min  = cJSON_GetObjectItem(alarm, "min");
+        if (cJSON_IsNumber(day) && cJSON_IsNumber(mo) && cJSON_IsNumber(year) &&
+            cJSON_IsNumber(hr)  && cJSON_IsNumber(min)) {
+            out.alarm.tm_mday = day->valueint;
+            out.alarm.tm_mon  = mo->valueint;
+            out.alarm.tm_year = year->valueint;
+            out.alarm.tm_hour = hr->valueint;
+            out.alarm.tm_min  = min->valueint;
+            out.has_alarm = true;
+        }
+    }
+
+    cJSON *datetime = cJSON_GetObjectItem(root, "datetime");
+    if (datetime) {
+        cJSON *wday = cJSON_GetObjectItem(datetime, "wday");
+        cJSON *day  = cJSON_GetObjectItem(datetime, "day");
+        cJSON *mo   = cJSON_GetObjectItem(datetime, "mo");
+        cJSON *year = cJSON_GetObjectItem(datetime, "year");
+        cJSON *hr   = cJSON_GetObjectItem(datetime, "hr");
+        cJSON *min  = cJSON_GetObjectItem(datetime, "min");
+        if (cJSON_IsNumber(wday) && cJSON_IsNumber(day) && cJSON_IsNumber(mo) &&
+            cJSON_IsNumber(year) && cJSON_IsNumber(hr)  && cJSON_IsNumber(min)) {
+            out.datetime.tm_wday = wday->valueint;
+            out.datetime.tm_mday = day->valueint;
+            out.datetime.tm_mon  = mo->valueint;
+            out.datetime.tm_year = year->valueint;
+            out.datetime.tm_hour = hr->valueint;
+            out.datetime.tm_min  = min->valueint;
+            out.has_datetime = true;
+        }
+    }
+
+    if (out.onboarded == -1) {
+        if (out.friendly_id[0] != '\0') {
+            out.onboarded = 0;
+        } else {
+            out.onboarded = 1;
+        }
+    }
+
+    cJSON_Delete(root);
+    return true;
+}
+
+void sync_rtc_and_alarm(const LogResponse &out) {
+    if (!out.has_alarm || !out.has_datetime) {
+        ESP_LOGW(TAG, "sync_rtc_and_alarm: missing alarm or datetime fields, skipping sync");
+        return;
+    }
+
+    struct tm aTime = out.alarm;
+    struct tm cTime = out.datetime;
+    
+    nvs_minutes_till_refresh = out.sleep_minutes;
+    alarm_day  = aTime.tm_mday;
+    alarm_hour = aTime.tm_hour;
+    alarm_min  = aTime.tm_min;
+
+    if (rtc_day != aTime.tm_mday) {
+        printf("RTC setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
+        rtc.setTime(&cTime); // Set the current time to the RTC
+ 
+        // Check for firmware updates once per day when alarm day changes
+        check_and_update_firmware();
+        
+        // Use mktime to normalize and manage transitions
+        time_t raw_time;
+        struct tm normalized_alarm = aTime;
+
+        raw_time = mktime(&normalized_alarm); // Normalize date transitions
+        localtime_r(&raw_time, &normalized_alarm); // Apply normalized date
+
+        rtc.setAlarm(ALARM_TIME, &normalized_alarm); // No more ALARM_DAY let's use always only time alarm in RV3032
+        printf("ALARM_DAY: %02d/%02d/%04d %02d:%02d\n", 
+        normalized_alarm.tm_mday, normalized_alarm.tm_mon, 
+        normalized_alarm.tm_year, normalized_alarm.tm_hour, 
+        normalized_alarm.tm_min);
+    } else if (nvs_boots < 10) {
+        printf("RTC INIT setTime: %02d/%02d/%d %02d:%02d WDAY:%d\n", cTime.tm_mday, cTime.tm_mon, cTime.tm_year, cTime.tm_hour, cTime.tm_min, cTime.tm_wday);
+        rtc.setTime(&cTime);
+        rtc.setAlarm(ALARM_TIME, &aTime);
+    } else {
+        rtc.setAlarm(ALARM_TIME, &aTime); // Same-day alarm
+    }
+    printf("ALARM_TIME: %02d/%02d/%d %02d:%02d\n", aTime.tm_mday, aTime.tm_mon, aTime.tm_year, aTime.tm_hour, aTime.tm_min);
+    rv3032_force_int_enable();
+}
+
+/**
+ * IMPORTANT: Stays
+ * @brief Display the "Claim your device" screen showing the friendly_id.
+ *
+ * Called when the backend returns a friendly_id instead of sensor analytics,
+ * meaning the device MAC has not yet been onboarded.
+ *
+ * @param friendly_id Human-readable claim code returned by the backend.
+ */
+void draw_claim_screen(const char* friendly_id, uint16_t sleep_minutes)
+{
+    epaper->fillScreen(0xF);
+    epaper->setTextColor(0x0);
+
+    epaper->setFont(ubuntu30);
+    epaper->drawString("Claim your device", 100, 80);
+
+    epaper->setFont(ubuntu20);
+    char url[140];
+    // Attention: Backend should validate this for C5 only using MAC and not anymore sensor_id
+    snprintf(url, sizeof(url), "Visit %s/welcome and enter your device ID:", WEB_HOST);
+
+    epaper->drawString(url, 80, 160);
+
+    epaper->setFont(ubuntu40);
+    epaper->drawString(friendly_id, 200, 260);
+
+    epaper->setFont(ubuntu20);
+    char textbuffer[AUTH_HEADER_MAX_LEN];
+    snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
+    epaper->drawString(textbuffer, 80, 370);
+    snprintf(textbuffer, sizeof(textbuffer), "Checking again in %u minutes...", sleep_minutes);
+    epaper->drawString(textbuffer, 80, 430);
+
+    BB_RECT box{ .x = 0, .y = 0, .w = EPD_WIDTH, .h = EPD_HEIGHT };
+    epaper->fullUpdate(true, false, &box);
+}
+
+// IMPORTANT: Stays we will take care of this later
+// --- helper: schedule RTC wake in N minutes (simple normalization) ---
+static void schedule_rtc_wakeup_minutes(int minutes)
+{
+    struct tm now;
+    rtc.getTime(&now);
+
+    struct tm alarm = now;
+    alarm.tm_min += minutes;
+
+    bool day_changed = false;
+
+    // Normalize minutes -> hours
+    while (alarm.tm_min >= 60) {
+        alarm.tm_min -= 60;
+        alarm.tm_hour += 1;
+    }
+    // Normalize hours -> day (simple handling; does not fully handle month/year rollovers)
+    if (alarm.tm_hour >= 24) {
+        alarm.tm_hour -= 24;
+        alarm.tm_mday += 1;
+        day_changed = true;
+    }
+
+    // Update globals used for display
+    alarm_day = alarm.tm_mday;
+    alarm_hour = alarm.tm_hour;
+    alarm_min = alarm.tm_min;
+
+    if (day_changed) {
+        rtc.setAlarm(ALARM_DAY, &alarm);
+    } else {
+        rtc.setAlarm(ALARM_TIME, &alarm);
+    }
+
+    // Small delay to ensure RTC writes settle
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    printf("RTC alarm scheduled in %d minutes -> %02d/%02d/%04d %02d:%02d\n",
+           minutes, alarm.tm_mday, alarm.tm_mon + 1, alarm.tm_year + 1900, alarm.tm_hour, alarm.tm_min);
+}
+
+// Sends the ambient logging to API
+void read_batt_level();
+void fetch_and_render_playlist()
+{
+    char *compressed_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (compressed_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for compressed response buffer");
+        schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
+        return;
+    }
+    memset(compressed_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    
+    HttpBuffer response_buf = {
+        .data = (uint8_t *)compressed_buffer,
+        .len = 0,
+        .max_len = MAX_HTTP_OUTPUT_BUFFER
+    };
+
+    esp_http_client_config_t config = {
+        .url = API_DL_PLAYLIST,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 5000,
+        .event_handler = _playlist_http_event_handler,
+        .user_data = &response_buf,
+    };
+
+    ESP_LOGI(TAG, "Fetching next screen playlist from: %s", API_DL_PLAYLIST);
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize HTTP client for playlist");
+        schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
+        free(compressed_buffer);
+        return;
+    }
+
+    char auth_header[AUTH_HEADER_MAX_LEN];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", mac_string);
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    esp_http_client_set_header(client, "Accept", "application/octet-stream");
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status_code = 0;
+    if (err == ESP_OK) {
+        status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "HTTP GET Playlist Status = %d, len = %d", status_code, response_buf.len);
+    } else {
+        ESP_LOGE(TAG, "HTTP GET Playlist request failed: %s", esp_err_to_name(err));
+    }
+
+    if (err == ESP_OK && status_code == 200 && response_buf.len > 0) {
+        if (dl == nullptr) {
+            ESP_LOGE(TAG, "FastJsonDL not initialized");
+        } else if (!dl->renderDeflatedJson((const uint8_t*)response_buf.data, response_buf.len)) {
+            ESP_LOGE(TAG, "FastJsonDL renderDeflatedJson error: %s", dl->getLastError());
+        } else {
+            ESP_LOGI(TAG, "FastJsonDL renderDeflatedJson success");
+        }
+
+        // Draw top bar header after JSON rendering to prevent override
+        epaper->setFont(ubuntu12);
+        epaper->setTextColor(0x0);
+        char textbuffer[56];
+        snprintf(textbuffer, sizeof(textbuffer),
+                 "NEXT WAKEUP Day:%d %02d:%02d  VER. %.2f",
+                 alarm_day, alarm_hour, alarm_min, firmware_version);
+        epaper->drawString(textbuffer, 675, 42);
+
+        // Re-draw battery level indicator
+        read_batt_level();
+
+        epaper->fullUpdate();
+    } else {
+        ESP_LOGE(TAG, "Failed to fetch playlist or status was not 200. Scheduling additional wake-up");
+        schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
+    }
+
+    esp_http_client_cleanup(client);
+    free(compressed_buffer);
+}
+
+void send_data_to_api()
+{
+    char *local_response_buffer = (char*)malloc(MAX_HTTP_OUTPUT_BUFFER + 1);
+    if (local_response_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+        return;
+    }
+    memset(local_response_buffer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    
+    esp_http_client_config_t config = {
+        .url = API_DL_LOG,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 3000,
+        .event_handler = _http_event_handler,
+        .user_data = local_response_buffer,
+    };
+
+    printf("DATA: %s \nURL: %s\n", result.buf, API_DL_LOG);
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    char auth_header[AUTH_HEADER_MAX_LEN];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", mac_string);
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    esp_http_client_set_post_field(client, result.buf, strlen(result.buf));
+    esp_err_t err = ESP_OK;
+
+    err = esp_http_client_perform(client);
+    int status_code = 0;
+    if (err == ESP_OK)
+    {
+        status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "HTTP POST Status = %d", status_code);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "HTTP POST request failed: %s. Scheduling additional wake-up", esp_err_to_name(err));
+        schedule_rtc_wakeup_minutes(10);
+        esp_http_client_cleanup(client);
+        free(local_response_buffer);
+        return;
+    }
+
+    LogResponse log_res;
+    bool parse_ok = parse_log_response(local_response_buffer, log_res);
+    esp_http_client_cleanup(client);
+
+    if (!parse_ok) {
+        ESP_LOGE(TAG, "Failed to parse API response. Scheduling additional wake-up");
+        schedule_rtc_wakeup_minutes(10);
+        free(local_response_buffer);
+        return;
+    }
+
+    bool claim_pending = (status_code == 401) || (log_res.onboarded == 0);
+
+    if (claim_pending) {
+        if (log_res.friendly_id[0] == '\0') {
+            snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", mac_string);
+        } else {
+            snprintf(res_friendly_id, sizeof(res_friendly_id), "%s", log_res.friendly_id);
+        }
+        nvs_minutes_till_refresh = log_res.sleep_minutes;
+        ESP_LOGI(TAG, "Device not onboarded (HTTP %d). Claim ID: %s, retry in %d min",
+                 status_code, res_friendly_id, nvs_minutes_till_refresh);
+        draw_claim_screen(res_friendly_id, nvs_minutes_till_refresh);
+        schedule_rtc_wakeup_minutes(nvs_minutes_till_refresh);
+    } else {
+        sync_rtc_and_alarm(log_res);
+        free(local_response_buffer);
+        local_response_buffer = NULL;
+        fetch_and_render_playlist();
+    }
+
+    if (local_response_buffer) {
+        free(local_response_buffer);
+    }
+}
+
+static void flush_str(char *buf, void *priv)
+{
+    printf("flush_str buf=[%s]\r\n", buf);
+    json_gen_test_result_t *result = (json_gen_test_result_t *)priv;
+    if (result)
+    {
+        if (strlen(buf) > sizeof(result->buf) - result->offset)
+        {
+            printf("Result Buffer too small\r\n");
+            return;
+        }
+        memcpy(result->buf + result->offset, buf, strlen(buf));
+        result->offset += strlen(buf);
+    }
+}
+
+/**
+ * Task that writes the QR when callback is set
+ */
+static void qr_draw_task(void *arg)
+{
+    while (true) {
+        // Wait until callback notifies
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        if (!g_qr.pending) continue;
+        g_qr.pending = false;
+
+        // Now it is safe to log and draw (normal task context)
+        ESP_LOGI(TAG, "Drawing QR (size=%d)", g_qr.size);
+
+        if (!epaper) {
+            ESP_LOGE(TAG, "epaper is null, cannot draw QR");
+            continue;
+        }
+
+        const int size = g_qr.size;
+        const int sq = 5;
+        const int x_offset = EPD_WIDTH - 260;
+        const int y_offset = 90;
+        const int border = 2;
+
+        epaper->fillRect(0, y_offset, EPD_WIDTH, 300, 0xF);
+
+        for (int y = -2; y < size + border; y++) {
+            for (int x = -2; x < size + border; x++) {
+                uint8_t on = 0;
+                if (x >= 0 && x < size && y >= 0 && y < size) {
+                    on = g_qr.modules[y * size + x];
+                }
+                uint8_t color = on ? 0x0 : 0xF; // pick black modules (depending on your palette)
+                epaper->fillRect((x * sq) + x_offset, (y * sq) + y_offset, sq, sq, color);
+            }
+        }
+
+        epaper->setFont(ubuntu20);
+        char textbuffer[64];
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR1);
+        epaper->drawString(textbuffer, 430, 110);
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s", MESSAGE_SCAN_QR2);
+        epaper->drawString(textbuffer, 430, 160);
+
+        snprintf(textbuffer, sizeof(textbuffer), "MAC: %s", mac_string);
+        epaper->drawString(textbuffer, 462, 310);
+
+        snprintf(textbuffer, sizeof(textbuffer), "%s welcomes you!", WEB_HOST);
+        epaper->drawString(textbuffer, 462, 360);
+
+        BB_RECT box{ .x = 50, .y = 50, .w = EPD_WIDTH-60, .h = 360 };
+        epaper->fullUpdate(false, true, &box);
+    }
+}
+
+/**
+ * Keep the BLE event handler very light: copy the string, notify a worker task, and return.
+ */
+void esp_qrcode_print_eink(esp_qrcode_handle_t qrcode)
+{
+    if (!qrcode) return;
+
+    int size = esp_qrcode_get_size(qrcode);
+    if (size <= 0 || size > 57) return;
+
+    // Copy module data quickly (no drawing, no printf)
+    g_qr.size = size;
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            g_qr.modules[y * size + x] = esp_qrcode_get_module(qrcode, x, y) ? 1 : 0;
+        }
+    }
+
+    g_qr.pending = true;
+
+    // Notify worker task (ISR-safe not required here, but keep it simple)
+    if (qr_draw_task_handle) {
+        xTaskNotifyGive(qr_draw_task_handle);
+    }
+}
+
+/* Event handler for catching RainMaker events */
+static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+    if (event_base == RMAKER_EVENT) {
+        switch (event_id) {
+            case RMAKER_EVENT_INIT_DONE:
+                ESP_LOGI(TAG, "EVENT RainMaker Initialised.");
+                break;
+            case RMAKER_EVENT_CLAIM_STARTED:
+                //led_blink_start(0, 0, 50, 500);
+                status_led_blue();
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Started.");
+                epaper->fillScreen(16);
+                epaper->fullUpdate(CLEAR_FAST, false);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                break;
+            case RMAKER_EVENT_CLAIM_SUCCESSFUL:
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Successful.");
+                epaper->fillScreen(16);
+                epaper->fullUpdate(CLEAR_FAST, false);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                break;
+            case RMAKER_EVENT_USER_NODE_MAPPING_DONE:
+                status_led_off();
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
+                break;
+            case RMAKER_EVENT_CLAIM_FAILED:
+                status_led_off();
+                ESP_LOGI(TAG, "EVENT RainMaker Claim Failed.");
+                break;
+            case RMAKER_EVENT_LOCAL_CTRL_STARTED:
+                ESP_LOGI(TAG, "EVENT Local Control Started.");
+                break;
+            case RMAKER_EVENT_LOCAL_CTRL_STOPPED:
+                ESP_LOGI(TAG, "EVENT Local Control Stopped.");
+                break;
+            default:
+                ESP_LOGW(TAG, "Unhandled RainMaker Event: %" PRIi32, event_id);
+        }
+    } else if (event_base == RMAKER_COMMON_EVENT) {
+        switch (event_id) {
+            case RMAKER_EVENT_REBOOT:
+                ESP_LOGI(TAG, "Rebooting in %d seconds.", *((uint8_t *)event_data));
+                break;
+            case RMAKER_EVENT_WIFI_RESET:
+                ESP_LOGI(TAG, "Wi-Fi credentials reset.");
+                epaper->drawString("Wi-Fi credentials are cleared", 50, 90);
+                epaper->fullUpdate();
+                break;
+            case RMAKER_EVENT_FACTORY_RESET:
+                ESP_LOGI(TAG, "Node reset to factory defaults.");
+                break;
+            case RMAKER_MQTT_EVENT_CONNECTED:
+                ESP_LOGI(TAG, "MQTT Connected.");
+                break;
+            case RMAKER_MQTT_EVENT_DISCONNECTED:
+                ESP_LOGI(TAG, "MQTT Disconnected.");
+                break;
+            case RMAKER_MQTT_EVENT_PUBLISHED: 
+                ESP_LOGI(TAG, "MQTT Published. Msg id: %d.", *((int *)event_data));
+                // Ready to do something?
+                ready_to_measure = true;
+                break;
+                
+            default:
+                ESP_LOGW(TAG, "Unhandled RainMaker Common Event: %" PRIi32, event_id);
+        }
+    } else if (event_base == APP_NETWORK_EVENT) {
+        switch (event_id) {
+            case APP_NETWORK_EVENT_QR_DISPLAY: {
+                status_led_blue();
+                ESP_LOGI("NETWORK_EVENT", "Provisioning QR : %s", (char *)event_data);
+                esp_qrcode_config_t cfg_qr = ESP_QRCODE_SENSORIA();
+                esp_qrcode_generate(&cfg_qr, (const char *)event_data);
+                break;
+                }
+            case APP_NETWORK_EVENT_PROV_TIMEOUT: {
+                 status_led_off();
+                 ESP_LOGI("NETWORK_EVENT", "Provisioning timed-out");
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0x0);
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+                 epaper->drawString("Provisioning timed-out.", 10, 110);
+                 epaper->drawString("< Press RESET and connect your device to USB-C", 10, 330);
+                 epaper->drawString("The LED signal should be BLUE when it's ready >", 300, 490);
+                  epaper->fullUpdate();
+                  vTaskDelay(pdMS_TO_TICKS(500));
+                  schedule_rtc_wakeup_minutes(3);
+                  break;
+             }
+            case APP_NETWORK_EVENT_PROV_RESTART: {
+                 constexpr size_t kWifiSsidTextSize = sizeof(wifi_sta_config_t{}.ssid) + 1;
+                 wifi_config_t wifi_cfg = {};
+                 char ssid_text[kWifiSsidTextSize] = {0};
+                 esp_err_t wifi_err = esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
+
+                 status_led_off();
+                 if (wifi_err == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
+                     memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                     ssid_text[kWifiSsidTextSize - 1] = '\0';
+                     ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP: %s", ssid_text);
+                 } else {
+                     ESP_LOGW("NETWORK_EVENT", "Can't connect to Wi-Fi AP");
+                 }
+
+                 epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+                 epaper->drawString("Can't connect to Wi-Fi AP", 10, 110);
+                 if (ssid_text[0] != '\0') {
+                     epaper->drawString(ssid_text, 10, 170);
+                 }
+                 epaper->drawString("Check SSID/password in ESP-RainMaker", 10, 230);
+                 epaper->drawString("RainMaker provisioning will retry", 10, 290);
+                 epaper->fullUpdate();
+                 vTaskDelay(pdMS_TO_TICKS(500));
+                 break;
+            }
+            default:
+                ESP_LOGW("NETWORK_EVENT", "Unhandled App Wi-Fi Event: %" PRIi32, event_id);
+                break;
+        }
+    } else if (event_base == RMAKER_OTA_EVENT) {
+        switch(event_id) {
+            case RMAKER_OTA_EVENT_STARTING:
+                status_led_green();
+                ESP_LOGI(TAG, "Starting OTA.");
+                break;
+            case RMAKER_OTA_EVENT_IN_PROGRESS:
+                ESP_LOGI(TAG, "OTA is in progress.");
+                break;
+            case RMAKER_OTA_EVENT_SUCCESSFUL:
+                ESP_LOGI(TAG, "OTA successful.");
+                break;
+            case RMAKER_OTA_EVENT_FAILED:
+                ESP_LOGI(TAG, "OTA Failed.");
+                break;
+            case RMAKER_OTA_EVENT_REJECTED:
+                ESP_LOGI(TAG, "OTA Rejected.");
+                break;
+            case RMAKER_OTA_EVENT_DELAYED:
+                ESP_LOGI(TAG, "OTA Delayed.");
+                break;
+            case RMAKER_OTA_EVENT_REQ_FOR_REBOOT:
+                status_led_off();
+                ESP_LOGI(TAG, "Firmware image downloaded. Please reboot your device to apply the upgrade.");
+                break;
+            default:
+                status_led_off();
+                ESP_LOGW(TAG, "Unhandled OTA Event: %" PRIi32, event_id);
+                break;
+        }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        /* Reset the disconnect counter whenever a connection is established */
+        s_wifi_disconn_count = 0;
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* Safe: all handlers registered via esp_event_handler_register() are called
+         * sequentially from the single default-event-loop task. */
+        static constexpr int kWifiFailSleepMin = 5;
+        s_wifi_disconn_count++;
+        ESP_LOGW(TAG, "Wi-Fi STA disconnected (attempt %d)", s_wifi_disconn_count);
+
+        if (s_wifi_disconn_count == 3) {
+            /* Show a message on the display so the user can see the problem */
+            /* wifi_sta_config_t::ssid is 32 bytes without a guaranteed null terminator,
+             * so the display buffer is 33 bytes (32 + null) and we null-terminate explicitly. */
+            constexpr size_t kWifiSsidLen = sizeof(wifi_sta_config_t{}.ssid) + 1;
+            wifi_config_t wifi_cfg = {};
+            char ssid_text[kWifiSsidLen] = {0};
+            if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) == ESP_OK && wifi_cfg.sta.ssid[0] != '\0') {
+                memcpy(ssid_text, wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid));
+                ssid_text[kWifiSsidLen - 1] = '\0';
+                ESP_LOGW(TAG, "Can't connect to Wi-Fi AP: %s", ssid_text);
+            }
+            status_led_off();
+            epaper->fillRect(0, 80, EPD_WIDTH, 400, 0xF);
+            epaper->drawString("Can't connect to Wi-Fi", 20, 130);
+            if (ssid_text[0] != '\0') {
+                epaper->drawString(ssid_text, 20, 190);
+            }
+            epaper->drawString("Click RST and keep BOOT pressed", 20, 250);
+            epaper->drawString("To clear WiFi credentials and connect again", 20, 310);
+            epaper->fullUpdate();
+        } else if (s_wifi_disconn_count >= 6) {
+            /* Enough retries — sleep and try again after 3 minutes */
+            constexpr uint64_t kUsPerSecond = 1000000ULL;
+            ESP_LOGW(TAG, "Too many Wi-Fi failures. Going to deep sleep for 5 min.");
+            s_wifi_disconn_count = 0;
+            schedule_rtc_wakeup_minutes(kWifiFailSleepMin);
+            esp_deep_sleep(kUsPerSecond * 60 * kWifiFailSleepMin);
+        }
+    } else {
+        ESP_LOGW(TAG, "Invalid event received!");
+    }
+}
+
+void epd_print_error(char *message)
+{
+    //led_blink_start(50, 0, 0, 500);
+    int x = 100; // EPD_WIDTH/2-300
+    int y = 20;
+    epaper->drawString(message, x, y);
+
+    epaper->fullUpdate(true, false);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    deep_sleep();
+}
+
+void read_batt_level() {
+   if (TiFuel.is_connected()) {
+    TiFuel.set_chemistry_profile(TI_CHEM_ID_4_2V);
+    batt_level = TiFuel.read_state_of_charge();
+    printf("TI BATT voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
+   }
+   /* if (batt_level < LOW_BATT_ALERT) {
+    epaper->setFont(ubuntu_L_30);
+    epaper->drawString("< CHARGE", 40, EPD_HEIGHT - 130);
+   } */
+   if (batt_level > 100) {
+    batt_level = 100;
+   }
+   // Note: Our batt_level gauge in the display is just 80 pixels so we divide the value *0.8
+
+   int color = 0;
+   #if DARKMODE
+   color = 0xF;
+   #endif
+   int x_offset = EPD_WIDTH - 160;
+   int y_offset = 70;
+   epaper->drawRect(x_offset, y_offset - 50, 80, 30, color);
+   epaper->drawRect(x_offset, y_offset - 50, 81, 31, color);
+   epaper->drawRect(x_offset +1, y_offset - 51, 80, 30, color);
+   epaper->drawRect(x_offset +80, y_offset - 41, 10, 12, color);
+   epaper->drawRect(x_offset +81, y_offset - 42, 10, 12, color);
+   epaper->fillRect(x_offset +1, y_offset - 49, (batt_level*0.8)-1, 28, 0xA); // bar
+}
+
+void scd_read()
+{
+    int16_t error = 0;
+    // int16_t sensirion_i2c_hal_init(int gpio_sda, int gpio_scl);
+    sensirion_i2c_hal_init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
+
+    // Clean up potential SCD40 states
+    scd4x_wake_up();
+    scd4x_stop_periodic_measurement();
+    scd4x_reinit();
+
+    uint16_t serial_0;
+    uint16_t serial_1;
+    uint16_t serial_2;
+    error = scd4x_get_serial_number(&serial_0, &serial_1, &serial_2);
+    if (error)
+    {
+        printf("Error executing scd4x_get_serial_number(): %i\n", error);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "serial: 0x%04x%04x%04x\n", serial_0, serial_1, serial_2);
+    }
+
+    // Start Measurement
+    status_led_green();
+    error = scd4x_start_periodic_measurement();
+    if (error)
+    {
+        ESP_LOGE(TAG, "Error executing scd4x_start_periodic_measurement(): %i\n", error);
+        epd_print_error((char *)"Please insert sensor");
+        deep_sleep();
+    }
+
+    printf("Waiting for first measurement... (5 sec)\n");
+    //scd4x_set_automatic_self_calibration(1);
+    bool data_ready_flag = false;
+    for (uint8_t c = 0; c < 100; ++c)
+    {
+        // Read Measurement
+        sensirion_i2c_hal_sleep_usec(100000);
+        // bool data_ready_flag = false;
+        error = scd4x_get_data_ready_flag(&data_ready_flag);
+        if (error)
+        {
+            ESP_LOGE(TAG, "Error executing scd4x_get_data_ready_flag(): %i\n", error);
+            continue;
+        }
+        if (data_ready_flag)
+        {
+            measure_taken = true;
+            status_led_off();
+            break;
+        }
+    }
+    if (!data_ready_flag)
+    {
+        ESP_LOGE(TAG, "SCD4x ready flag is not coming in time");
+    }
+
+    int32_t temperature;
+    int32_t humidity;
+    error = scd4x_read_measurement(&co2, &temperature, &humidity);
+    if (error)
+    {
+        ESP_LOGE(TAG, "Error executing scd4x_read_measurement(): %i\n", error);
+    }
+    else if (co2 == 0)
+    {
+        ESP_LOGI(TAG, "Invalid sample detected, skipping.\n");
+    }
+    else
+    {
+        scd4x_stop_periodic_measurement();
+
+        read_batt_level();
+        tem = (float)temperature / 1000;
+        tem = roundf(tem * 10) / 10;
+        hum = (float)humidity / 1000;
+        hum = roundf(hum * 10) / 10;
+        ESP_LOGI(TAG, "CO2 : %u", co2);
+        ESP_LOGI(TAG, "Temp: %d m°C %.1f 0xFC", (int)temperature, tem);
+        ESP_LOGI(TAG, "Humi: %d mRH %.1f %%\n", (int)humidity, hum);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGI(TAG, "scd4x_power_down()");
+    scd4x_power_down();
+
+    sensirion_i2c_hal_free();
+}
+
+void build_request_json() {
+    // IP address.
+        esp_netif_ip_info_t ip_info;
+        esp_netif_get_ip_info(esp_netif_get_default_netif(), &ip_info);
+        sprintf(esp_ip, IPSTR, IP2STR(&ip_info.ip));
+        char rtc_time_str[28];
+        sprintf(rtc_time_str, "%d-%02d-%02d %02d:%02d:%02d", RTCTime.tm_year-100, RTCTime.tm_mon, RTCTime.tm_mday, RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec);
+        // Before mac was read here now in app_main
+        memset(&result, 0, sizeof(json_gen_test_result_t));
+        json_gen_str_t jstr;
+        json_gen_str_start(&jstr, result.buf, sizeof(result.buf), flush_str, &result);
+        json_gen_start_object(&jstr);
+        json_gen_obj_set_int(&jstr, "co2", co2);
+        json_gen_obj_set_float(&jstr, "temperature", tem);
+        json_gen_obj_set_float(&jstr, "humidity", hum);
+        json_gen_push_object(&jstr, "client");
+        // No more key here. Authentication: Bearer will be sent in the request
+        //json_gen_obj_set_string(&jstr, "key", nvs_sensor_id);
+        json_gen_obj_set_string(&jstr, "rtc_t", rtc_time_str);
+        json_gen_obj_set_string(&jstr, "model", "S3");
+        json_gen_obj_set_float(&jstr, "version", firmware_version);
+        json_gen_obj_set_string(&jstr, "ip", esp_ip);
+        json_gen_obj_set_string(&jstr, "mac", mac_string);
+        json_gen_obj_set_int(&jstr, "batt_level", batt_level);
+        json_gen_end_object(&jstr);
+        json_gen_end_object(&jstr);
+        json_gen_str_end(&jstr);
+}
+
+static void log_wakeup_reason()
+{
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    ESP_LOGI(TAG, "Wakeup cause: %d", (int)cause);
+    gpio_set_direction(GPIO_NUM_0, GPIO_MODE_INPUT);
+
+    switch (cause)
+    {
+    case ESP_SLEEP_WAKEUP_TIMER:
+        ESP_LOGI(TAG, "EXT1 wakeup deepsleep");
+        break;
+    case ESP_SLEEP_WAKEUP_EXT1: {
+        uint64_t mask = esp_sleep_get_ext1_wakeup_status();
+        ESP_LOGI(TAG, "EXT1 wakeup mask: 0x%llx", (unsigned long long)mask);
+        break;
+        }
+    default:
+        ESP_LOGI(TAG, "Wakeup reason unknown");
+        break;
+    }
+}
+
+static void scd40_run_forced_recalibration_ui(uint16_t reference_ppm = 430)
+{
+    uint16_t x_cursor = 50;
+    uint16_t y_cursor = 150;
+    // Make sure I2C HAL is up (your firmware uses sensirion_i2c_hal_init in scd_read too)
+    esp_err_t rc = sensirion_i2c_hal_init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO);
+    if (rc != ESP_OK) {
+        epaper->fillScreen(0xF);
+        epaper->setFont(ubuntu30);
+        epaper->drawString("I2C init failed", x_cursor, y_cursor);
+        epaper->fullUpdate(true, false);
+        return;
+    }
+
+    // Reset sensor state
+    scd4x_wake_up();
+    scd4x_stop_periodic_measurement();
+    scd4x_reinit();
+    scd4x_set_automatic_self_calibration(0);
+
+    rc = scd4x_start_periodic_measurement();
+    if (rc != 0) {
+        epaper->fillScreen(0xF);
+        epaper->setFont(ubuntu30);
+        epaper->drawString("SCD4x start failed", x_cursor, y_cursor);
+        epaper->fullUpdate(true, false);
+        sensirion_i2c_hal_free();
+        return;
+    }
+    y_cursor = 90;
+    // 3.5 minutes stabilization (same as your tool)
+    int iTime = 30 * 7;
+    char text[32];
+
+    epaper->fillScreen(0xF);
+    epaper->setFont(ubuntu30);
+    epaper->drawString("Calibration running", x_cursor, y_cursor);
+    y_cursor += 50;
+    epaper->drawString("Keep in open air", x_cursor, y_cursor);
+    epaper->fullUpdate(true, false);
+
+    while (iTime > 0) {
+        epaper->fillRect(x_cursor, 200, 600, 80, 0xF);
+        epaper->setFont(ubuntu40);
+        snprintf(text, sizeof(text), "%02d:%02d", iTime / 60, iTime % 60);
+        epaper->drawString(text, x_cursor, 250);
+
+        // Use fullUpdate on a small box to avoid partial-update quirks
+        BB_RECT box{ .x = x_cursor, .y = 60, .w = 700, .h = 260 };
+        epaper->fullUpdate(false, false, &box);
+
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        iTime -= 5;
+    }
+
+    scd4x_stop_periodic_measurement();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    uint16_t frc_correction = 0;
+    rc = scd4x_perform_forced_recalibration(reference_ppm, &frc_correction);
+
+    epaper->fillRect(x_cursor, 300, 900, 160, 0xF);
+    epaper->setFont(ubuntu30);
+
+    if (rc == 0 && frc_correction != 0xFFFF) {
+        snprintf(text, sizeof(text), "Success! FRC=%u", frc_correction);
+        epaper->drawString("Calibration OK", 40, 340);
+        epaper->drawString(text, x_cursor, 390);
+    } else {
+        snprintf(text, sizeof(text), "rc=%d FRC=0x%04X", (int)rc, frc_correction);
+        epaper->drawString("Calibration FAILED", 40, 340);
+        epaper->drawString(text, x_cursor, 390);
+    }
+
+    epaper->fullUpdate(true, false);
+
+    // Put sensor back to low power
+    scd4x_power_down();
+    sensirion_i2c_hal_free();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+static bool button_is_still_pressed()
+{
+    // Boot button is active-low
+    return gpio_get_level(IO_BOOT_C5) == 0;
+}
+
+// returns true if user held long enough (abort), false if released early (start)
+static bool wait_for_longpress_abort(uint32_t hold_ms)
+{
+    const int poll_ms = 20;
+    int waited = 0;
+
+    while (waited < (int)hold_ms) {
+        if (!button_is_still_pressed()) {
+            return false; // released => not a long-press
+        }
+        vTaskDelay(pdMS_TO_TICKS(poll_ms));
+        waited += poll_ms;
+    }
+    return true; // still pressed after hold_ms => long-press
+}
+
+static void calibration_task(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        const uint32_t now = (uint32_t)esp_timer_get_time();
+
+        // Debounce
+        if (s_last_click_us && (now - s_last_click_us) < CLICK_DEBOUNCE_US) {
+            continue;
+        }
+
+        if (!s_calib_mode) {
+            // Not armed yet: require double click to arm
+            if (s_last_click_us == 0 || (now - s_last_click_us) > DOUBLECLICK_US) {
+                // start a new click sequence
+                s_click_count = 1;
+                s_last_click_us = now;
+
+                // Optional: small UI hint (or do nothing)
+                // epaper->drawString("Double-click for calibration", ...);
+                // epaper->fullUpdate(...);
+
+                continue;
+            }
+
+            // Within window: this is the 2nd click
+            s_click_count++;
+            s_last_click_us = now;
+
+            if (s_click_count >= 2) {
+                s_click_count = 0;
+                s_last_click_us = 0;
+
+                // Arm calibration
+                s_calib_mode = true;
+
+                status_led_blue();
+                epaper->fillScreen(0xF);
+                epaper->setFont(ubuntu30);
+                epaper->drawString("SCD40 Calibration", 40, 80);
+                epaper->drawString("Go to open air.", 40, 140);
+                epaper->drawString("Press button to start", 40, 200);
+                epaper->drawString("(hold to abort)", 40, 250);
+                epaper->fullUpdate(true, false);
+            }
+
+        } else {
+            // Armed: press-and-hold aborts, short press starts.
+            // If user keeps holding for >2s -> abort.
+            // If they release earlier -> start calibration.
+            const bool abort = wait_for_longpress_abort(2000);
+
+            if (abort) {
+                // Wait for release so we don't immediately re-trigger on the next edge
+                while (button_is_still_pressed()) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+
+                s_calib_mode = false;
+                status_led_off();
+                epaper->fillScreen(0xF);
+                epaper->setFont(ubuntu30);
+                epaper->drawString("Calibration aborted", 40, 150);
+                epaper->fullUpdate(true, false);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+                // Reset click detection state
+                s_click_count = 0;
+                s_last_click_us = 0;
+                continue;
+            }
+
+            // Short press => start calibration (but ensure the button is released)
+            while (button_is_still_pressed()) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+
+            s_calib_mode = false;
+            status_led_cyan();
+            scd40_run_forced_recalibration_ui(430);
+            status_led_off();
+            }
+    }
+}
+
+void app_main()
+{
+    log_wakeup_reason();
+    // IMPORTANT: Set power hold HIGH immediately
+    //power_hold_drive(true);
+    rtc_int_gpio_init();
+    // Wake up when RTC_INT_GPIO is driven LOW by the RTC
+    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(1ULL << RTC_INT_GPIO, ESP_EXT1_WAKEUP_ANY_LOW));
+
+    // Read MCU MAC
+    mac_string = getFormattedMacAddress();
+
+    printf("RTC OTA C5 version %.2f MAC: %s\n", firmware_version, mac_string);
+    epaper = new FASTEPD();
+
+    esp_err_t err;
+    // WiFi log level
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    epaper->initPanel(BB_PANEL_SENSORIA_C5);
+    // Configure IO expander pins for Green + Blue LEDs
+    status_led_init();
+    epaper->setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
+    //epaper->setRotation(0);
+    // 4 bit per pixel: 16 grays mode
+    epaper->setMode(BB_MODE_4BPP);
+    int bgcolor = 0xF;
+    int fgcolor = 0;
+    #if DARKMODE
+        bgcolor = 0;
+        fgcolor = 0xF;
+    #endif
+
+    epaper->fillScreen(bgcolor);
+    epaper->setTextColor(fgcolor);
+    fb = epaper->currentBuffer();
+
+    // Initialise FastJsonDL after the EPD panel is ready
+    dl = new FastJsonDL(*epaper);
+    if (dl == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate FastJsonDL — server rendering disabled");
+    } else {
+        dl->setFontRegistry(g_fonts, sizeof(g_fonts) / sizeof(g_fonts[0]));
+    }
+
+    esp_rmaker_console_init();
+
+    /* Initialize NVS. */
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK( err );
+    err = nvs_open("storage", NVS_READWRITE, &nvs_h);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+    }
+
+    nvs_get_i16(nvs_h, "boots", &nvs_boots);
+    ESP_LOGI(TAG, "-> NVS Boot count: %d", nvs_boots);
+    nvs_boots++;
+    // Set new value
+    nvs_set_i16(nvs_h, "boots", nvs_boots);
+    
+    // No more SENSOR ID let's use the MAC!
+
+    // We read sensor here
+    scd_read();
+
+    printf("Read RTC\n");
+    int rc = rtc.init(CONFIG_SDA_GPIO, CONFIG_SCL_GPIO, true, 100000); // bWire=true
+    
+    if (rc != RTC_SUCCESS) {
+        printf("Error in rtc.init() I2C is already initialized\n");
+        /* while (1) {
+            vTaskDelay(1);
+        } */
+    } else {
+        // RTC get time
+        rtc.getTime(&RTCTime);
+        rtc_day = RTCTime.tm_mday;
+        printf("%02d:%02d:%02d DAY:%d MO:%d WDAY:%d\n\n", RTCTime.tm_hour, RTCTime.tm_min, RTCTime.tm_sec, RTCTime.tm_mday, RTCTime.tm_mon, RTCTime.tm_wday);
+    }
+    rtc.clearAlarms();
+
+    /* Initialize Wi-Fi/Thread. Note that, this should be called before esp_rmaker_node_init() */
+    app_network_init();
+
+    /* Register an event handler to catch RainMaker events */
+    ESP_ERROR_CHECK(esp_event_handler_register(RMAKER_COMMON_EVENT, ESP_EVENT_ANY_ID, &event_handler_rmk, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(APP_NETWORK_EVENT, ESP_EVENT_ANY_ID, &event_handler_rmk, NULL));
+    /* Register Wi-Fi STA disconnect events so we can show a display message when the AP is unreachable */
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event_handler_rmk, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,    &event_handler_rmk, NULL));
+    /* Initialize the ESP RainMaker Agent.
+     * Note that this should be called after app_network_init() but before app_network_start()
+     * */
+
+    ESP_LOGI("HEAP", "free heap=%" PRIu32 ", min free heap=%" PRIu32,
+         esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
+    ESP_LOGI("HEAP", "free internal=%" PRIu32 ", min internal=%" PRIu32,
+         heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+         heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+
+    esp_rmaker_config_t rainmaker_cfg = {
+        .enable_time_sync = false,
+    };
+    esp_rmaker_node_t *node = esp_rmaker_node_init(&rainmaker_cfg, "ESP RainMaker Device", "Sensoria");
+    if (!node)
+    {
+        ESP_LOGE(TAG, "Could not initialise node. Aborting!!!");
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        abort();
+    }
+
+    while (!measure_taken) {
+        // Waiting for Sensor to report readiness
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    /* Create a device and add the relevant parameters to it */
+    // esp_rmaker_device_t *
+    temp_sensor_device = esp_rmaker_temp_sensor_device_create("Sensoria C5", NULL, tem);
+
+    esp_rmaker_device_add_cb(temp_sensor_device, write_cb, NULL);
+    // Customized slider to Reset WiFi
+
+    esp_rmaker_param_t *reset_wifi = esp_rmaker_brightness_param_create(DEVICE_PARAM_WIFI_RESET, 0);
+    esp_rmaker_param_add_bounds(reset_wifi, esp_rmaker_int(0), esp_rmaker_int(100), esp_rmaker_int(10));
+    esp_rmaker_device_add_param(temp_sensor_device, reset_wifi);
+
+    esp_rmaker_node_add_device(node, temp_sensor_device);
+
+    /* Enable OTA */
+    esp_rmaker_ota_enable_default();
+
+    /* Enable timezone service which will be require for setting appropriate timezone
+     * from the phone apps for scheduling to work correctly.
+     * For more information on the various ways of setting timezone, please check
+     * https://rainmaker.espressif.com/docs/time-service.html
+     * 
+     * LET's save power on these
+     */
+    //esp_rmaker_timezone_service_enable();
+
+    /* Enable scheduling. */
+    //esp_rmaker_schedule_enable();
+
+    /* Enable Scenes */
+    //esp_rmaker_scenes_enable();
+ 
+    /* Start the ESP RainMaker Agent */
+    esp_rmaker_start();
+
+    /* Reset WiFi credentials */
+    if (gpio_get_level(IO_BOOT_C5) == 0) {
+      esp_rmaker_wifi_reset(1,10);
+      nvs_open("storage", NVS_READWRITE, &nvs_h);
+        nvs_set_i16(nvs_h, "boots", 0);
+        nvs_close(nvs_h);
+      vTaskDelay(pdMS_TO_TICKS(10000));
+      return;
+    } else {
+        xTaskCreate(qr_draw_task, "qr_draw", 8192, nullptr, 5, &qr_draw_task_handle);
+    }
+    
+    // Create calibration task + enable button interrupt (after the "held at boot" check)
+    xTaskCreate(calibration_task, "calib", 8192, nullptr, 5, &calib_task_handle);
+    boot_button_interrupt_init();
+    
+    /* Start the Wi-Fi/Thread.
+     * If the node is provisioned, it will start connection attempts,
+     * else, it will start Wi-Fi provisioning. The function will return
+     * after a connection has been successfully established
+     */
+    err = app_network_start(POP_TYPE_RANDOM);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not start network. Aborting!!!");
+        vTaskDelay(5000/portTICK_PERIOD_MS);
+        abort();
+    }
+
+    while (!ready_to_measure) {
+        // Waiting for WiFi
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    build_request_json();
+    send_data_to_api();
+    deep_sleep();
+}

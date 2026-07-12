@@ -86,8 +86,8 @@ extern "C"
 
 void deep_sleep()
 {
-    printf("15 seconds wait before sleep\n");
-    vTaskDelay(15000 / portTICK_PERIOD_MS);
+    printf("2 seconds wait before sleep\n");
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
     
     ESP_LOGI(pcTaskGetName(0), "DEEP_SLEEP_MINUTES: %d mins to wake-up", nvs_minutes_till_refresh);
     esp_deep_sleep(1000000LL * 60 * nvs_minutes_till_refresh);

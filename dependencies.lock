@@ -1,7 +1,7 @@
 dependencies:
   espressif/cbor:
     component_hash: 
-      37b68b0730fb9a0b71334e4cc41b7de443fc2069152fdedcfe63dac8eb94a73a
+      dad9ca860963e930366510a10b422b3125a4fb27b979712ed65efcbcd742de50
     dependencies:
     - name: idf
       require: private
@@ -9,7 +9,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.6.1~3
+    version: 0.6.1~4
   espressif/esp-serial-flasher:
     component_hash: 
       dcc42a16712a1a636509cf0bf90e14032d7f2141784b533613b267b6aa318d52
@@ -150,7 +150,7 @@ dependencies:
     version: 1.2.0
   espressif/esp_secure_cert_mgr:
     component_hash: 
-      47589860736b456608035b06d88e6a5dab566419fa8737a76a4f33c611ec539b
+      40a986c1f45d91eb6d339ca51dcab90c4ecce2a6622c268edaaa05887852d464
     dependencies:
     - name: idf
       require: private
@@ -158,7 +158,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 2.7.0
+    version: 2.9.2
   espressif/jsmn:
     component_hash: 
       d80350c41bbaa827c98a25b6072df00884e72f54885996fab4a4f0aebce6b6c3
@@ -205,7 +205,7 @@ dependencies:
     version: 3.0.1~1
   espressif/mdns:
     component_hash: 
-      3ec0af5f6bce310512e90f482388d21cc7c0e99668172d2f895356165fc6f7c5
+      e81ca7a7f53ea34e78274df054da692c272e1315572876b237b1748e267c013b
     dependencies:
     - name: idf
       require: private
@@ -213,7 +213,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.8.2
+    version: 1.11.3
   espressif/network_provisioning:
     component_hash: 
       21c45dd9cf570c12671e1678ddcfabe77471afa979bcff207a8478b45b58667a
@@ -252,6 +252,6 @@ direct_dependencies:
 - espressif/led_strip
 - espressif/qrcode
 - idf
-manifest_hash: e5cff2e2659f21bb0e3043db019ead7dbf66937fce67b8ce2494335cd186293d
+manifest_hash: b09f617ce90123b3513f20991ba90e432434016d829c100e076a9a041d69ee21
 target: esp32s3
 version: 2.0.0
