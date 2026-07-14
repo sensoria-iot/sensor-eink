@@ -1261,9 +1261,8 @@ static void event_handler_rmk(void* arg, esp_event_base_t event_base, int32_t ev
                 ESP_LOGI(TAG, "Rebooting in %d seconds.", *((uint8_t *)event_data));
                 break;
             case RMAKER_EVENT_WIFI_RESET:
-                ESP_LOGI(TAG, "Wi-Fi credentials reset.");
-                epaper->drawString("Wi-Fi credentials are cleared", 50, 90);
-                epaper->fullUpdate();
+                ESP_LOGI(TAG, "Wi-Fi credentials reset. Restarting...");
+                esp_restart();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
                 ESP_LOGI(TAG, "Node reset to factory defaults.");
@@ -1809,6 +1808,7 @@ void app_main()
     epaper->setBitBang(true);
     // Configure IO expander pins for Green + Blue LEDs
     status_led_init();
+    epaper->setRotation(180);
     epaper->setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
     //epaper->setRotation(0);
     // 4 bit per pixel: 16 grays mode
@@ -1944,7 +1944,7 @@ void app_main()
     esp_rmaker_start();
 
     /* Reset WiFi credentials */
-    if (gpio_get_level(IO_BOOT_C5) == 1) {
+    if (gpio_get_level(IO_BOOT_C5) == 0) {
       esp_rmaker_wifi_reset(1,10);
       nvs_open("storage", NVS_READWRITE, &nvs_h);
         nvs_set_i16(nvs_h, "boots", 0);
