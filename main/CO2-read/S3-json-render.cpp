@@ -4,6 +4,7 @@
 #include "esp_mac.h"
 #include "esp_heap_caps.h"
 #include "i2c_bus.h"
+//#define USE_FUELGAUGE
 // INTERRUPT
 #define RTC_INT_GPIO GPIO_NUM_1
 // --- Status LED via PCA9535 (through FastEPD external IO) ---
@@ -11,7 +12,7 @@
 // C5 schematic: LED_BLUE = IO1_2, LED_GREEN = IO1_3
 #define EXTIO_LED_BLUE   (8+3)  // IO1_3 3 & 2 are swapped in schematics
 #define EXTIO_LED_GREEN  (8+2)  // IO1_2
-#define IO_BOOT_C5 GPIO_NUM_28
+#define IO_BOOT_C5 GPIO_NUM_0
 
 float firmware_version = 1.12; //1.11 is last version let's keep it higher so it doesn't update!
 
@@ -30,9 +31,11 @@ static FASTEPD *epaper = nullptr;
 // Dotstar 2812 LED in the strip. TO be replaced by RGB LED with 3 IOs going to PCA9535 
 //#include "led_controller.h"
 
-// BQ27426 fuel gauge (For next revision)
-#include "TiFuelGauge.h"
-TiFuelGauge TiFuel;
+#ifdef USE_FUELGAUGE
+    // BQ27426 fuel gauge (For next revision)
+    #include "TiFuelGauge.h"
+    TiFuelGauge TiFuel;
+#endif
 int batt_level = 0;
 
 // Fonts
@@ -1419,11 +1422,13 @@ void epd_print_error(char *message)
 }
 
 void read_batt_level() {
+    #ifdef USE_FUELGAUGE
    if (TiFuel.is_connected()) {
     TiFuel.set_chemistry_profile(TI_CHEM_ID_4_2V);
     batt_level = TiFuel.read_state_of_charge();
     printf("TI BATT voltage:%d batt_level:%d %%\n\n", TiFuel.read_voltage(), batt_level);
    }
+   #endif
    /* if (batt_level < LOW_BATT_ALERT) {
     epaper->setFont(ubuntu_L_30);
     epaper->drawString("< CHARGE", 40, EPD_HEIGHT - 130);
@@ -1794,13 +1799,14 @@ void app_main()
     // Read MCU MAC
     mac_string = getFormattedMacAddress();
 
-    printf("RTC OTA C5 version %.2f MAC: %s\n", firmware_version, mac_string);
+    printf("RTC OTA S3 version %.2f MAC: %s\n", firmware_version, mac_string);
     epaper = new FASTEPD();
 
     esp_err_t err;
     // WiFi log level
     esp_log_level_set("wifi", ESP_LOG_ERROR);
-    epaper->initPanel(BB_PANEL_SENSORIA_C5);
+    epaper->initPanel(BB_PANEL_V7_RAW);
+    epaper->setBitBang(true);
     // Configure IO expander pins for Green + Blue LEDs
     status_led_init();
     epaper->setPanelSize(EPD_WIDTH, EPD_HEIGHT, BB_PANEL_FLAG_MIRROR_X);
@@ -1938,7 +1944,7 @@ void app_main()
     esp_rmaker_start();
 
     /* Reset WiFi credentials */
-    if (gpio_get_level(IO_BOOT_C5) == 0) {
+    if (gpio_get_level(IO_BOOT_C5) == 1) {
       esp_rmaker_wifi_reset(1,10);
       nvs_open("storage", NVS_READWRITE, &nvs_h);
         nvs_set_i16(nvs_h, "boots", 0);

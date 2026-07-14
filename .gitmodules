@@ -1,24 +1,21 @@
-[submodule "components/scd40"]
-	path = components/scd40
-	url = https://github.com/timbuntu/esp-idf-scd4x.git
-[submodule "components/bb_rtc"]
-	path = components/bb_rtc
-	url = https://github.com/bitbank2/bb_rtc.git
 [submodule "components/BQ27426_idf"]
 	path = components/BQ27426_idf
 	url = https://github.com/martinberlin/BQ27426_idf.git
-[submodule "components/bb_scd41"]
-	path = components/bb_scd41
-	url = https://github.com/bitbank2/bb_scd41.git
 [submodule "components/FastJsonDL"]
 	path = components/FastJsonDL
 	url = https://github.com/martinberlin/FastJsonDL.git
-[submodule "components/FastEPD"]
-	path = components/FastEPD
-	url = https://github.com/bitbank2/FastEPD.git
 [submodule "components/miniz"]
 	path = components/miniz
 	url = https://github.com/martinberlin/miniz-esp32.git
 [submodule "components/i2c_bus"]
 	path = components/i2c_bus
 	url = https://github.com/martinberlin/i2c_bus.git
+[submodule "components/FastEPD"]
+	path = components/FastEPD
+	url = https://github.com/martinberlin/FastEPD-C5.git
+[submodule "components/scd40"]
+	path = components/scd40
+	url = https://github.com/martinberlin/scd4x-idf-i2cmaster.git
+[submodule "components/bb_rtc"]
+	path = components/bb_rtc
+	url = https://github.com/martinberlin/bb_rtc_i2cmaster.git
